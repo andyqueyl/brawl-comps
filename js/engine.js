@@ -8,14 +8,17 @@
 // out no more than coin-flip noise would explain, K grows and the list leans on the mode-wide numbers.
 
 (function () {
-  const K_PAIR = 40;
-  const K_TRIO = 60;
+  // Pair and trio records mostly reflect who plays together (pre-made top teams), not the comp itself:
+  // when tested on players the model never saw, light shrinkage here made predictions worse.
+  const K_PAIR = 200;
+  const K_TRIO = 300;
   const K_PERSONAL = 30;
   const POWER_STEP = 0.06;   // log-odds lost per power level under 11
   const PERSONAL_WEIGHT = 0.5;
   const CANDIDATES = 14;     // best brawlers per player considered when building comps
-  // Summed team scores ran about 15% too confident when predicting held-out battles (Oct 2026 data).
-  const TEAM_SCALE = 0.85;
+  // Summed team scores ran about 20% too confident when predicting battles of players held out of
+  // the data (Oct 2026), because part of a brawler's record is the skill of the top players who main it.
+  const TEAM_SCALE = 0.8;
 
   const logit = (p) => Math.log(p / (1 - p));
   const sigmoid = (x) => 1 / (1 + Math.exp(-x));
@@ -144,7 +147,7 @@
           return { id: b.id, meta, pers, solo: meta.L + pers.L };
         })
         .sort((a, b) => b.solo - a.solo)
-        .slice(0, players.length === 1 ? 30 : CANDIDATES)
+        .slice(0, players.length === 1 ? 30 : players.length > 3 ? 9 : CANDIDATES)
     );
 
     if (players.length === 1) {

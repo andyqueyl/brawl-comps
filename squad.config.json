@@ -1,3 +1,8 @@
 {
-  "players": []
+  "players": [
+    { "name": "Dustin", "tag": "#2Y2GPLL88" },
+    { "name": "Glowstar", "tag": "#28900QP9Y" },
+    { "name": "DLB", "tag": "#2PYQL2ULQ" },
+    { "name": "Cody", "tag": "#28R8GC0C9" }
+  ]
 }

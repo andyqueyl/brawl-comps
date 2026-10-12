@@ -60,7 +60,7 @@
     if (state.selected.includes(tag)) state.selected = state.selected.filter((t) => t !== tag);
     else {
       state.selected.push(tag);
-      if (state.selected.length > 3) state.selected.shift();
+      if (state.selected.length > 5) state.selected.shift();
     }
     store.set("selected", state.selected);
     renderWho();
@@ -143,10 +143,12 @@
     const m = model.info;
     const img = mapImg(m);
     const players = selectedPlayers();
-    const teamSize = Object.keys(m.trios).length ? 3 : null;
 
+    const teamSize = /5v5/i.test(m.mode) ? 5 : 3;
     let squadHtml;
-    if (!players.length) {
+    if (players.length > teamSize) {
+      squadHtml = `<p class="note">${players.length} people selected, but this is a ${teamSize}v${teamSize} map. Tap whoever's sitting out in the bar above.</p>`;
+    } else if (!players.length) {
       squadHtml = `<p class="note">Tap who's playing in the bar above and this turns into comps built from your own brawlers.</p>`;
     } else {
       const recs = E.recommend(model, players, { minPower: state.minPower, limit: players.length === 1 ? 8 : 6 });
@@ -299,12 +301,12 @@
         <li><b>Pairs and trios:</b> if a pair or exact trio has been seen, its record nudges the score up or down versus what the individual brawlers predict.</li>
         <li><b>Your squad:</b> only brawlers each person owns at the chosen power or higher. Every power level under 11 costs a little, and each person's own tracked record on a brawler counts for a bit once there are enough games.</li>
       </ul>
-      <p>Checked on held-out battles: the scores are well calibrated overall, and the comps ranked highest kept winning on battles the model hadn't seen.</p>
+      <p>A comp's % is its estimated chance against an average team of equally skilled players. The model was checked by building it from half the top players and predicting games of the other half: after tuning, its percentages matched how often teams actually won.</p>
       <h2>What it can't tell you</h2>
       <ul>
-        <li><b>Picks matter less than skill.</b> Knowing both teams' brawlers only raised the share of held-out games called correctly from 65% to 66%. A better comp is a few percentage points, not a guaranteed win.</li>
+        <li><b>Picks matter less than skill.</b> On players the model hadn't seen, knowing both teams' brawlers only raised the share of games called correctly from 64.3% to 64.8%. Comps tilt the odds; they don't decide games.</li>
         <li>It's top-player data. What wins at the top isn't always what wins at lower trophies.</li>
-        <li>The highest trio records often come from a few pre-made top teams, so part of "this trio wins" is "these players win".</li>
+        <li>Pair and trio records mostly come from a few pre-made top teams, so part of "this trio wins" is "these players win". The model leans on them only lightly for that reason.</li>
         <li>Unless a comp says "games seen", that exact trio wasn't played enough to measure; the % is built from its brawlers and pairs.</li>
         <li>Balance changes show up the next Monday, and the first week after a patch mixes old and new data.</li>
         <li>The API only returns each player's last 25 battles, so squad records miss games when someone plays more than that in a week.</li>

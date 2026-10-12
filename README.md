@@ -6,9 +6,9 @@ This is a static site (plain HTML and JavaScript). A GitHub Action refreshes the
 
 ## What it can't tell you
 
-- **Picks matter less than skill.** On held-out battles, knowing both teams' brawlers raised the share of games called correctly only from 65.1% to 66.1%. A better comp is worth a few percentage points.
+- **Picks matter less than skill.** On players the model hadn't seen, knowing both teams' brawlers raised the share of games called correctly only from 64.3% to 64.8%. Comps tilt the odds; they don't decide games.
 - The numbers come from top-ranked players. What wins at the top isn't always what wins at lower trophies.
-- The highest trio records often come from a few pre-made top teams, so part of "this trio wins" is "these players win".
+- Pair and trio records mostly come from a few pre-made top teams, so part of "this trio wins" is "these players win". The model leans on them only lightly for that reason.
 - Unless a comp says "games seen", that exact trio wasn't played enough to measure directly.
 - Balance changes show up the next Monday, and the first week after a patch mixes old and new data.
 - The API only returns each player's last 25 battles, so squad records miss games when someone plays more than that in a week.
@@ -26,11 +26,12 @@ This is a static site (plain HTML and JavaScript). A GitHub Action refreshes the
 
 `js/engine.js` turns counts into rankings. A brawler's win rate on a map is shrunk toward its win rate across the whole mode, with the amount of shrinkage fitted from the data each week (empirical Bayes), so a 4-0 brawler doesn't top the list. Pair and trio records adjust a comp only as far as their sample supports. Each person's power level and own record count for a little on top.
 
-Checks on the first real pull (42,819 battles, Oct 2026), building from half the battles and predicting the other half:
+Checks on the first real pulls (about 43,000 battles each, Oct 2026). The strict test builds the model from half of the sampled top players and predicts battles involving only the other half, so a player's skill can't leak into their brawler's numbers:
 
 - The bias correction beat the alternative of only learning from top players' opponents.
-- Summed team scores were about 15% too confident, so the engine scales them by 0.85; after that, calibration on held-out games was exact.
-- The five best-ranked trios per map won 87.5% of their held-out games against a model expectation of 79% (64.5% from player skill alone).
+- Pair and trio records added nothing for unseen players (they mostly capture pre-made teams), so they're shrunk hard (`K_PAIR = 200`, `K_TRIO = 300`).
+- Summed team scores were about 20% too confident, so the engine scales them by 0.8; after that, calibration on unseen players was exact.
+- A random half/half split of battles (same players on both sides) makes the model look much better, with top trios winning 86% of held-out games. That number is inflated by player skill and isn't the one to trust.
 
 The engine was also checked against a simulated API with planted brawler strengths. Pass `DUMP_BATTLES=path.json` to the update script to save the raw battles for checks like these.
 

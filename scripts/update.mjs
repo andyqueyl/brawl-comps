@@ -167,7 +167,7 @@ async function collectMeta() {
       m.battles += 1;
       if (bt.type !== "ranked") m.ranked += 1;
       const has = bt.teams.map((t) => t.some((p) => sampled.has(p.tag)));
-      if (DUMP) dump.push([bt.mode, bt.map, bt.type, bt.teams.map((t) => t.map((p) => p.id)), bt.result === "victory" ? mine : 1 - mine, has]);
+      if (DUMP) dump.push([bt.mode, bt.map, bt.type, bt.teams.map((t) => t.map((p) => p.id)), bt.result === "victory" ? mine : 1 - mine, has, bt.teams.flat().filter((p) => sampled.has(p.tag)).map((p) => p.tag)]);
       bt.teams.forEach((team, i) => {
         const win = (i === mine) === (bt.result === "victory");
         // S: this team has a sampled top player and the other doesn't; O: the reverse; N: both do.
@@ -338,17 +338,25 @@ const rotation = ((await api("/events/rotation")) || []).map((s) => ({
 console.log("refreshing squad");
 const squad = await refreshSquad();
 
-const sample = await collectMeta();
-const prev = await readJson(join(DATA, "meta.json"), { maps: {} });
-const maps = blend(sample.maps, prev.maps);
-
 const updated = new Date().toISOString();
-await writeJson(join(DATA, "meta.json"), {
-  updated,
-  sample: { players: sample.players, battles: sample.battles, decay: DECAY, sampledSideWin: sample.edge },
-  rotation,
-  maps,
-});
-await writeJson(join(DATA, "squad.json"), { updated, players: squad });
-console.log(`done in ${Math.round((Date.now() - started) / 1000)}s: ${sample.battles} new battles across ${Object.keys(sample.maps).length} maps`);
-console.log("top-player side win rate (removed):", JSON.stringify(sample.edge));
+if (!process.env.DUMP_ONLY) await writeJson(join(DATA, "squad.json"), { updated, players: squad });
+
+// SQUAD_ONLY=1 refreshes profiles without re-sampling, e.g. after adding someone mid-week
+// (a second meta pull in the same week would count the same battles twice).
+if (process.env.DUMP_ONLY) {
+  // Analysis run: sample and save raw battles (DUMP_BATTLES) without touching the site's data.
+  await collectMeta();
+} else if (!process.env.SQUAD_ONLY) {
+  const sample = await collectMeta();
+  const prev = await readJson(join(DATA, "meta.json"), { maps: {} });
+  const maps = blend(sample.maps, prev.maps);
+  await writeJson(join(DATA, "meta.json"), {
+    updated,
+    sample: { players: sample.players, battles: sample.battles, decay: DECAY, sampledSideWin: sample.edge },
+    rotation,
+    maps,
+  });
+  console.log(`${sample.battles} new battles across ${Object.keys(sample.maps).length} maps`);
+  console.log("top-player side win rate (removed):", JSON.stringify(sample.edge));
+}
+console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);

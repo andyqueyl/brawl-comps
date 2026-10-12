@@ -14,6 +14,8 @@
   const POWER_STEP = 0.06;   // log-odds lost per power level under 11
   const PERSONAL_WEIGHT = 0.5;
   const CANDIDATES = 14;     // best brawlers per player considered when building comps
+  // Summed team scores ran about 15% too confident when predicting held-out battles (Oct 2026 data).
+  const TEAM_SCALE = 0.85;
 
   const logit = (p) => Math.log(p / (1 - p));
   const sigmoid = (x) => 1 / (1 + Math.exp(-x));
@@ -93,6 +95,7 @@
           trio = { games: g, wins: w };
         }
       }
+      L *= TEAM_SCALE;
       return { L, p: sigmoid(L), trio };
     }
 

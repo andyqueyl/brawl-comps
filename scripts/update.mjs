@@ -16,11 +16,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA = join(ROOT, "data");
 const API = process.env.BS_API_BASE || "https://bsproxy.royaleapi.dev/v1";
 const KEY = process.env.BS_API_KEY;
-const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 1500);
+const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 3000);
 const CONCURRENCY = Number(process.env.CONCURRENCY || 8);
 // Last week's counts are kept at half weight, so the data leans on this week but small maps keep a sample.
 const DECAY = 0.5;
 const COUNTRIES = ["global", "US", "CA", "MX", "BR", "GB", "FR", "DE", "ES", "IT", "TR", "PL", "KR", "JP", "AU", "ID", "PH", "EG", "SA", "AR"];
+const DUMP = process.env.DUMP_BATTLES; // optional path: also save every counted battle, for offline checks
 const COUNTED_TYPES = new Set(["ranked", "soloRanked", "teamRanked"]);
 
 if (!KEY) {
@@ -144,8 +145,11 @@ async function collectMeta() {
   const players = [...tags].slice(0, MAX_PLAYERS);
   console.log(`sampling battle logs of ${players.length} top players`);
 
+  const sampled = new Set(players);
+  const dump = [];
   const seen = new Set();
   const maps = {};
+  const sideTally = {}; // per mode: [teams with a sampled player facing an unsampled team, their wins]
   let done = 0;
   await pool(players, async (tag) => {
     const log = await api(`/players/${enc(tag)}/battlelog`);
@@ -162,16 +166,63 @@ async function collectMeta() {
       const m = maps[k] || (maps[k] = { mode: bt.mode, map: bt.map, mapId: bt.mapId, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {} });
       m.battles += 1;
       if (bt.type !== "ranked") m.ranked += 1;
+      const has = bt.teams.map((t) => t.some((p) => sampled.has(p.tag)));
+      if (DUMP) dump.push([bt.mode, bt.map, bt.type, bt.teams.map((t) => t.map((p) => p.id)), bt.result === "victory" ? mine : 1 - mine, has]);
       bt.teams.forEach((team, i) => {
         const win = (i === mine) === (bt.result === "victory");
+        // S: this team has a sampled top player and the other doesn't; O: the reverse; N: both do.
+        const side = has[i] && has[1 - i] ? 2 : has[i] ? 0 : 1;
+        if (side === 0) {
+          const t = sideTally[bt.mode] || (sideTally[bt.mode] = [0, 0]);
+          t[0] += 1;
+          t[1] += win ? 1 : 0;
+        }
         const ids = [...new Set(team.map((p) => p.id))].sort((a, b) => a - b);
-        for (const id of ids) addCount(m.brawlers, id, win);
-        for (const pk of combos(ids, 2)) addCount(m.pairs, pk, win);
-        if (ids.length === 3) addCount(m.trios, ids.join("-"), win);
+        for (const id of ids) addSide(m.brawlers, id, side, win);
+        for (const pk of combos(ids, 2)) addSide(m.pairs, pk, side, win);
+        if (ids.length === 3) addSide(m.trios, ids.join("-"), side, win);
       });
     }
   });
-  return { maps, battles: seen.size, players: players.length };
+  if (DUMP) await writeFile(DUMP, JSON.stringify(dump));
+  const edge = debias(maps, sideTally);
+  return { maps, battles: seen.size, players: players.length, edge };
+}
+
+function addSide(obj, key, side, win) {
+  const c = obj[key] || (obj[key] = [0, 0, 0, 0, 0, 0]);
+  c[side * 2] += 1;
+  c[side * 2 + 1] += win ? 1 : 0;
+}
+
+// Every battle here was found through a top player's log, and top players win far more than half their
+// games, so whatever they pick looks stronger than it is. Measure how much the side with a sampled player
+// wins (per mode), take that edge back out of their games and give it back to the other side's games.
+// Games where both teams had a sampled player need no correction. Result: plain [games, wins] counts.
+function debias(maps, sideTally) {
+  const lg = (w, g) => Math.log((w + 0.5) / (g - w + 0.5));
+  const sig = (x) => 1 / (1 + Math.exp(-x));
+  const all = Object.values(sideTally).reduce((a, [g, w]) => [a[0] + g, a[1] + w], [0, 0]);
+  const hAll = all[0] ? lg(all[1], all[0]) : 0;
+  const edge = { all: Math.round(sig(hAll) * 1000) / 10 };
+  const hMode = {};
+  for (const [mode, [g, w]] of Object.entries(sideTally)) {
+    // Modes with few games lean on the overall edge.
+    hMode[mode] = (g * lg(w, g) + 300 * hAll) / (g + 300);
+    edge[mode] = Math.round(sig(hMode[mode]) * 1000) / 10;
+  }
+  for (const m of Object.values(maps)) {
+    const h = hMode[m.mode] ?? hAll;
+    for (const field of ["brawlers", "pairs", "trios"]) {
+      for (const [key, [gS, wS, gO, wO, gN, wN]] of Object.entries(m[field])) {
+        let w = wN;
+        if (gS) w += gS * sig(lg(wS, gS) - h);
+        if (gO) w += gO * sig(lg(wO, gO) + h);
+        m[field][key] = [gS + gO + gN, w];
+      }
+    }
+  }
+  return edge;
 }
 
 // Blend this week's counts with last week's at DECAY weight, then drop thin pair/trio rows to keep the file small.
@@ -294,9 +345,10 @@ const maps = blend(sample.maps, prev.maps);
 const updated = new Date().toISOString();
 await writeJson(join(DATA, "meta.json"), {
   updated,
-  sample: { players: sample.players, battles: sample.battles, decay: DECAY },
+  sample: { players: sample.players, battles: sample.battles, decay: DECAY, sampledSideWin: sample.edge },
   rotation,
   maps,
 });
 await writeJson(join(DATA, "squad.json"), { updated, players: squad });
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s: ${sample.battles} new battles across ${Object.keys(sample.maps).length} maps`);
+console.log("top-player side win rate (removed):", JSON.stringify(sample.edge));

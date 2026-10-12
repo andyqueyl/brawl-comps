@@ -291,20 +291,24 @@
     view.innerHTML = `<article class="prose">
       <h1 style="font-size:40px">How it works</h1>
       <h2>Where the numbers come from</h2>
-      <p>Once a week a GitHub Action pulls the last 25 battles of about ${fmt(s.players || 0)} top-ranked players (global plus ~20 country leaderboards) from the official Brawl Stars API. Trophy and Ranked 3v3 games count; Showdown, Duels, friendlies and events with no map don't. Last update: ${fmt(s.battles || 0)} new battles. The previous week's counts stay in at half weight so smaller maps keep a sample.</p>
+      <p>Every Monday a GitHub Action pulls the last 25 battles of about ${fmt(s.players || 0)} top-ranked players (global plus ~20 country leaderboards) from the official Brawl Stars API. Trophy and Ranked team games count; Showdown, Duels and friendlies don't. Last update: ${fmt(s.battles || 0)} battles. The previous week's counts stay in at half weight so smaller maps keep a sample.</p>
+      <p>Top players win far more than half their games${s.sampledSideWin?.all ? ` (${s.sampledSideWin.all}% last update)` : ""}, so anything they pick would look stronger than it is. That edge is measured each week and taken back out, so the win rates here are about the brawlers, not the players.</p>
       <h2>How comps are ranked</h2>
       <ul>
-        <li><b>Brawler on a map:</b> win rate on that map, pulled toward the brawler's win rate across the whole mode (25 imaginary games), so a 4-0 brawler doesn't top the list.</li>
+        <li><b>Brawler on a map:</b> win rate on that map, pulled toward the brawler's win rate across the whole mode. How hard it's pulled is fitted from the data, so a 4-0 brawler doesn't top the list.</li>
         <li><b>Pairs and trios:</b> if a pair or exact trio has been seen, its record nudges the score up or down versus what the individual brawlers predict.</li>
-        <li><b>Your squad:</b> only brawlers each person owns at the chosen power or higher. Every power level under 11 costs a little, and each person's own tracked record on a brawler counts for a bit.</li>
+        <li><b>Your squad:</b> only brawlers each person owns at the chosen power or higher. Every power level under 11 costs a little, and each person's own tracked record on a brawler counts for a bit once there are enough games.</li>
       </ul>
+      <p>Checked on held-out battles: the scores are well calibrated overall, and the comps ranked highest kept winning on battles the model hadn't seen.</p>
       <h2>What it can't tell you</h2>
       <ul>
-        <li>It's top-player data. What wins at 1,000+ trophies per brawler or high Ranked isn't always what wins at lower trophies.</li>
-        <li>The % on a comp is a model estimate, not a promise; unless it says "games seen", that exact trio wasn't played enough to measure directly.</li>
-        <li>Balance changes take a week to show up, and the first week after a big patch mixes old and new data.</li>
+        <li><b>Picks matter less than skill.</b> Knowing both teams' brawlers only raised the share of held-out games called correctly from 65% to 66%. A better comp is a few percentage points, not a guaranteed win.</li>
+        <li>It's top-player data. What wins at the top isn't always what wins at lower trophies.</li>
+        <li>The highest trio records often come from a few pre-made top teams, so part of "this trio wins" is "these players win".</li>
+        <li>Unless a comp says "games seen", that exact trio wasn't played enough to measure; the % is built from its brawlers and pairs.</li>
+        <li>Balance changes show up the next Monday, and the first week after a patch mixes old and new data.</li>
         <li>The API only returns each player's last 25 battles, so squad records miss games when someone plays more than that in a week.</li>
-        <li>The "Live" badge is the rotation at update time; maps rotate daily, so it gets stale over the week.</li>
+        <li>The "Live" badge is the rotation at update time; maps rotate daily, so it goes stale during the week.</li>
       </ul>
       <p>Brawler and map art from <a href="https://brawlify.com">Brawlify</a>. Data from the official Brawl Stars API via RoyaleAPI's proxy. Not affiliated with Supercell.</p>
     </article>`;

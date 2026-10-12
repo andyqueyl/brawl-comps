@@ -12,9 +12,15 @@
   // when tested on players the model never saw, light shrinkage here made predictions worse.
   const K_PAIR = 200;
   const K_TRIO = 300;
-  const K_PERSONAL = 30;
-  const POWER_STEP = 0.06;   // log-odds lost per power level under 11
-  const PERSONAL_WEIGHT = 0.5;
+  // Personal fit: what each of us is actually good on. Recent games count most, then highest trophies.
+  // These weights are a judgment call (Andy's priority order), not fitted: there's too little squad data.
+  const HALF_LIFE_DAYS = 21;  // a game three weeks old counts half as much as one today
+  const OTHER_MODE = 0.5;     // games in a different mode count half
+  const K_RECENT = 8;         // imaginary 50% games pulling a short recent record toward even
+  const VOLUME_STEP = 0.15;   // playing a brawler a lot lately is itself a sign you're good on it
+  const VOLUME_CAP = 0.5;
+  const TROPHY_WEIGHT = 0.4;  // best brawler by highest trophies gets +0.4, worst gets -0.4
+  const POWER_STEP = 0.06;    // log-odds lost per power level under 11
   const CANDIDATES = 14;     // best brawlers per player considered when building comps
   // Summed team scores ran about 20% too confident when predicting battles of players held out of
   // the data (Oct 2026), because part of a brawler's record is the skill of the top players who main it.
@@ -124,14 +130,37 @@
     return { info: m, kMap, brawler, pairSynergy, team, topBrawlers, topTeams };
   }
 
-  // How well a specific player fits a brawler, on top of the meta: power gap plus their own record.
-  function personal(player, id) {
+  // How well a specific player fits a brawler, on top of the meta.
+  const trophyRanks = new WeakMap();
+  function trophyPct(player, owned) {
+    let sorted = trophyRanks.get(player);
+    if (!sorted) trophyRanks.set(player, (sorted = player.brawlers.map((b) => b.highest || 0).sort((a, b) => a - b)));
+    if (sorted.length < 2) return 0.5;
+    let below = 0;
+    while (below < sorted.length && sorted[below] < (owned.highest || 0)) below++;
+    return below / (sorted.length - 1);
+  }
+
+  function personal(player, id, ctx = {}) {
     const owned = player.brawlers.find((b) => b.id === +id);
     if (!owned) return null;
-    const [g, w] = player.record?.brawlers?.[id] || [0, 0];
-    const comfort = g ? logit(shrink(g, w, 0.5, K_PERSONAL)) * PERSONAL_WEIGHT : 0;
+    const now = ctx.now || Date.now();
+    let g = 0, w = 0, recentGames = 0, recentWins = 0, lastPlayed = 0;
+    for (const [t, bid, mode, won] of player.games || []) {
+      if (bid !== +id) continue;
+      const age = Math.max(0, (now - t) / 864e5);
+      const weight = 0.5 ** (age / HALF_LIFE_DAYS) * (ctx.mode && mode !== ctx.mode ? OTHER_MODE : 1);
+      g += weight;
+      w += weight * won;
+      if (age <= 30) { recentGames++; recentWins += won; }
+      lastPlayed = Math.max(lastPlayed, t);
+    }
+    const record = g ? logit(shrink(g, w, 0.5, K_RECENT)) : 0;
+    const volume = Math.min(VOLUME_STEP * Math.log1p(g), VOLUME_CAP);
+    const pct = trophyPct(player, owned);
+    const trophy = TROPHY_WEIGHT * (2 * pct - 1);
     const powerGap = -(11 - Math.min(owned.power, 11)) * POWER_STEP;
-    return { owned, games: g, wins: w, comfort, powerGap, L: comfort + powerGap };
+    return { owned, recentGames, recentWins, lastPlayed, trophyPct: pct, record, volume, trophy, powerGap, L: record + volume + trophy + powerGap };
   }
 
   // Best comps for the selected squad members on one map. Each member plays a different brawler they own.
@@ -143,7 +172,7 @@
         .filter((b) => b.power >= minPower)
         .map((b) => {
           const meta = model.brawler(b.id);
-          const pers = personal(pl, b.id);
+          const pers = personal(pl, b.id, { mode: model.info.mode, now: opts.now });
           return { id: b.id, meta, pers, solo: meta.L + pers.L };
         })
         .sort((a, b) => b.solo - a.solo)
@@ -173,13 +202,16 @@
     pick(0, []);
     results.sort((a, b) => b.score - a.score);
 
-    // Keep the list varied: no two suggestions with the exact same set of brawlers.
+    // Keep the list varied: no repeated brawler sets, and nobody stuck on the same brawler in more than
+    // two suggestions, so each person also sees their next-best options.
     const seen = new Set();
+    const uses = {};
     const out = [];
     for (const r of results) {
       const k = trioKey(r.picks.map((p) => p.id));
-      if (seen.has(k)) continue;
+      if (seen.has(k) || r.picks.some((p, i) => (uses[i + ":" + p.id] || 0) >= 2)) continue;
       seen.add(k);
+      r.picks.forEach((p, i) => (uses[i + ":" + p.id] = (uses[i + ":" + p.id] || 0) + 1));
       out.push(r);
       if (out.length >= limit) break;
     }

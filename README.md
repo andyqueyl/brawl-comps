@@ -1,8 +1,8 @@
 # Brawl Comps
 
-Best Brawl Stars comps for every map, built from the brawlers our squad actually owns. Pick who's playing, open a map, and it ranks trios where each person plays a brawler they have, using win rates from top players' recent battles plus each person's power levels and own record.
+Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 only; 5v5 is left out). Pick who's playing, open a map, and it ranks trios where each person plays a brawler they own: what each of us is good on comes first (recent games, then highest trophies), then win rates from top players' battles on that map.
 
-This is a static site (plain HTML and JavaScript). A GitHub Action refreshes the data every Monday.
+This is a static site (plain HTML and JavaScript). A GitHub Action refreshes squad games daily and the top-player meta every Monday.
 
 ## What it can't tell you
 
@@ -11,7 +11,8 @@ This is a static site (plain HTML and JavaScript). A GitHub Action refreshes the
 - Pair and trio records mostly come from a few pre-made top teams, so part of "this trio wins" is "these players win". The model leans on them only lightly for that reason.
 - Unless a comp says "games seen", that exact trio wasn't played enough to measure directly.
 - Balance changes show up the next Monday, and the first week after a patch mixes old and new data.
-- The API only returns each player's last 25 battles, so squad records miss games when someone plays more than that in a week.
+- The API only returns each player's last 25 battles. Squad games are pulled daily, so only a day with more than 25 games loses some.
+- How much recent form and trophies count is a judgment call, not fitted; there aren't enough squad games to test it.
 - The "Live" badge is the map rotation at update time; maps rotate daily, so it goes stale during the week.
 
 ## How the data is built
@@ -19,8 +20,8 @@ This is a static site (plain HTML and JavaScript). A GitHub Action refreshes the
 `scripts/update.mjs` (Node 20+, no dependencies):
 
 1. Pulls brawler, map and mode names and art from Brawlify's public API (`data/game.json`).
-2. Loads each squad member from `squad.config.json`: owned brawlers, power levels, trophies, and their recent battles, which add to a running record (`data/squad.json`, `data/squad-history.json`).
-3. Takes the top 200 players from the global and ~20 country leaderboards (up to 3,000 players), reads their last 25 battles, and counts wins for every brawler, pair and trio on each map. Only Trophy and Ranked team games count; duplicates are dropped when several sampled players were in the same match.
+2. Loads each squad member from `squad.config.json`: owned brawlers, power levels, trophies, and every new game since the last pull, kept one by one so recent games can count more (`data/squad.json`, `data/squad-history.json`). `SQUAD_ONLY=1` does just this step (the daily run).
+3. Takes the top 200 players from the global and ~20 country leaderboards (up to 3,000 players), reads their last 25 battles, and counts wins for every brawler, pair and trio on each map. Only Trophy and Ranked 3v3 games count; duplicates are dropped when several sampled players were in the same match.
 4. Removes the sampling bias: every battle was found through a top player, and the team with the sampled player wins about 66% of the time, so their picks would look too strong. The script measures that edge per mode and takes it out of those teams' results (and gives it back to their opponents'). Games where both teams had a sampled player need no correction.
 5. Blends this week's counts with last week's at half weight (`data/meta.json`).
 
@@ -45,7 +46,7 @@ The engine was also checked against a simulated API with planted brawler strengt
    { "players": [ { "name": "Andy", "tag": "#ABC123" } ] }
    ```
 
-4. Run the workflow once from the Actions tab (or wait for Monday).
+4. Run the workflow once from the Actions tab (or wait for the next scheduled run).
 
 Run it locally with `BS_API_KEY=... node scripts/update.mjs`, then serve the folder (for example `python3 -m http.server`) and open it.
 

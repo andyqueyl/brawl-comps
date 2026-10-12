@@ -110,6 +110,8 @@ function teamBattle(entry) {
   const mode = entry.event?.mode && entry.event.mode !== "unknown" ? entry.event.mode : b.mode;
   const map = entry.event?.map;
   if (!mode || !map) return null;
+  // 3v3 only: 5v5 modes are left out on purpose.
+  if (b.teams.some((t) => t.length !== 3)) return null;
   const teams = b.teams.map((t) => t.map((p) => ({ tag: p.tag, id: p.brawler?.id, power: p.brawler?.power })));
   if (teams.some((t) => t.some((p) => !p.id))) return null;
   return { time: entry.battleTime, type: b.type, mode, map, mapId: entry.event?.id || null, result: b.result, teams };
@@ -262,6 +264,11 @@ function blend(fresh, previous) {
 
 // ---------- squad profiles ----------
 
+const battleMs = (t) => Date.parse(t.replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/, "$1-$2-$3T$4:$5:$6"));
+const KEEP_BATTLES = 1500; // per person, newest kept
+
+// Each person's own games are kept one by one (time, brawler, mode, result, squad mates), so the site can
+// weight recent form. The API only shows the last 25 games, which is why the Action refreshes this daily.
 async function refreshSquad() {
   const config = await readJson(join(ROOT, "squad.config.json"), { players: [] });
   const history = await readJson(join(DATA, "squad-history.json"), {});
@@ -276,25 +283,24 @@ async function refreshSquad() {
       continue;
     }
     const log = await api(`/players/${enc(tag)}/battlelog`);
-    const h = history[tag] || (history[tag] = { seen: [], brawlers: {}, modes: {}, together: {} });
-    const seen = new Set(h.seen);
+    const h = history[tag]?.battles ? history[tag] : (history[tag] = { battles: [] });
+    const seen = new Set(h.battles.map((b) => b[0]));
     let added = 0;
     for (const entry of log?.items || []) {
       const bt = teamBattle(entry);
-      if (!bt || bt.type === "friendly" || seen.has(bt.time)) continue;
-      seen.add(bt.time);
-      h.seen.push(bt.time);
-      added++;
-      const team = bt.teams.find((t) => t.some((p) => p.tag === tag));
+      if (!bt || bt.type === "friendly") continue;
+      const t = battleMs(bt.time);
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      const team = bt.teams.find((tm) => tm.some((p) => p.tag === tag));
       const me = team.find((p) => p.tag === tag);
-      const win = bt.result === "victory";
-      addCount(h.brawlers, me.id, win);
-      addCount(h.modes, bt.mode + "|" + me.id, win);
       const mates = team.filter((p) => p.tag !== tag && squadTags.has(p.tag)).map((p) => p.tag).sort();
-      if (mates.length) addCount(h.together, mates.join(","), win);
+      h.battles.push([t, me.id, bt.mode, bt.result === "victory" ? 1 : 0, mates]);
+      added++;
     }
-    h.seen = h.seen.slice(-600);
-    console.log(`  ${member.name}: ${player.brawlers.length} brawlers, ${added} new battles`);
+    h.battles.sort((a, b) => a[0] - b[0]);
+    h.battles = h.battles.slice(-KEEP_BATTLES);
+    console.log(`  ${member.name}: ${player.brawlers.length} brawlers, ${added} new games (${h.battles.length} tracked)`);
 
     profiles.push({
       name: member.name,
@@ -315,7 +321,8 @@ async function refreshSquad() {
         gears: (b.gears || []).length,
         hyper: (b.hyperCharges || []).length,
       })),
-      record: { brawlers: h.brawlers, modes: h.modes, together: h.together },
+      // [time ms, brawler id, mode, won 1/0, squad mates' tags]
+      games: h.battles,
     });
   }
   await writeJson(join(DATA, "squad-history.json"), history);

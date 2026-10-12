@@ -164,3 +164,9 @@ h3 { font-size: 17px; margin-top: 14px; }
   .chips::-webkit-scrollbar { display: none; }
   .chip { flex: none; }
 }
+details.more { margin-top: 8px; }
+details.more summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--muted); }
+details.more[open] summary { margin-bottom: 6px; }
+.mode-row { grid-template-columns: 96px minmax(0, 1fr); }
+.mode-row .picks { flex-wrap: wrap; min-width: 0; }
+@media (max-width: 520px) { .mode-row .picks img, .mode-row .picks .ph { width: 30px; height: 30px; } }

@@ -2,7 +2,9 @@
 
 Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 only; 5v5 is left out). Pick who's playing, open a map, and it ranks trios where each person plays a brawler they own: what each of us is good on comes first (recent games, then highest trophies), then win rates from top players' battles on that map.
 
-This is a static site (plain HTML and JavaScript). A GitHub Action refreshes squad games daily and the top-player meta every Monday.
+**Live site:** https://andyqueyl.github.io/brawl-comps/
+
+This is a static site (plain HTML and JavaScript). A GitHub Action refreshes squad games and the map rotation daily, and the top-player meta every Monday.
 
 ## What it can't tell you
 
@@ -52,8 +54,3 @@ Run it locally with `BS_API_KEY=... node scripts/update.mjs`, then serve the fol
 
 Art from [Brawlify](https://brawlify.com). Data from the official Brawl Stars API. Not affiliated with Supercell.
 
-## Private page
-
-The repo is private, so there's no GitHub Pages site (that needs GitHub Pro). Instead the site is published as a private Claude page: https://claude.ai/artifact/Ftj2CqegvzeGkZhzqkDths
-
-`node scripts/build-artifact.mjs` builds it into `artifact/` (gitignored): one HTML file with the CSS and JS inlined, plus the data files with every portrait, map and icon embedded, since that page can't load images from other sites. To refresh it: `git pull`, run the build, and republish `artifact/brawl-comps.html` with its three `data/` files to the same URL.

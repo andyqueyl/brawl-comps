@@ -346,7 +346,11 @@ console.log("refreshing squad");
 const squad = await refreshSquad();
 
 const updated = new Date().toISOString();
-if (!process.env.DUMP_ONLY) await writeJson(join(DATA, "squad.json"), { updated, players: squad });
+if (!process.env.DUMP_ONLY) {
+  await writeJson(join(DATA, "squad.json"), { updated, players: squad });
+  // Maps rotate daily, so the live rotation is saved on every run, including the daily squad-only one.
+  await writeJson(join(DATA, "rotation.json"), { updated, slots: rotation.filter((r) => !/5v5/i.test(r.mode || "")) });
+}
 
 // SQUAD_ONLY=1 refreshes profiles without re-sampling, e.g. after adding someone mid-week
 // (a second meta pull in the same week would count the same battles twice).

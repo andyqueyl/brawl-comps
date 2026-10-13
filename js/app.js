@@ -1,14 +1,12 @@
-// Renders the three views (maps, one map, squad) from the weekly data files.
+// Renders the pages (home, one map, squad, method) from the data files. Routing is by hash.
 (function () {
   const E = window.BrawlEngine;
   const view = document.getElementById("view");
-  const who = document.getElementById("who");
-  const minPowerSel = document.getElementById("minPower");
   // We mostly play these two; they lead every list and are the default filter.
   const FOCUS = ["brawlBall", "knockout"];
-  const state = { game: null, meta: null, squad: null, totals: null, selected: [], minPower: 1, query: "", mode: "focus" };
+  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers" };
 
-  // ---------- small helpers ----------
+  // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const pct = (p) => (p * 100).toFixed(1) + "%";
   const fmt = (n) => Math.round(n).toLocaleString();
@@ -17,372 +15,384 @@
     get(k, d) { try { const v = localStorage.getItem("bc:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem("bc:" + k, JSON.stringify(v)); } catch {} },
   };
+  const DAY = 864e5;
+  const shortDate = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const apiTime = (t) => Date.parse(String(t).replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/, "$1-$2-$3T$4:$5:$6"));
+  const check = `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5l2.2 2.2L9.5 3.5"/></svg>`;
 
   let brawlerById = {};
   const bName = (id) => brawlerById[id]?.name || "#" + id;
-  const bImg = (id, cls = "") => {
+  const bImg = (id) => {
     const b = brawlerById[id];
-    return b?.img ? `<img class="${cls}" src="${esc(b.img)}" alt="${esc(b.name)}" title="${esc(b.name)}" loading="lazy" width="56" height="56">` : `<span class="ph ${cls}" title="${esc(bName(id))}"></span>`;
+    return b?.img ? `<img src="${esc(b.img)}" alt="${esc(b.name)}" title="${esc(b.name)}" loading="lazy" width="52" height="52">` : `<span class="ph" title="${esc(bName(id))}">${esc(bName(id).slice(0, 2))}</span>`;
   };
   function modeInfo(mode) {
     const m = state.game?.modes?.[norm(mode)];
     const name = m?.name || String(mode).replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
-    return { name, img: m?.img, color: m?.color };
+    return { name, img: m?.img };
   }
+  const modeColor = (mode) => (mode === "brawlBall" ? "var(--ball)" : mode === "knockout" ? "var(--ko)" : "var(--other)");
   const modeIcon = (mode) => { const m = modeInfo(mode); return m.img ? `<img src="${esc(m.img)}" alt="" loading="lazy">` : ""; };
-  function mapImg(m) {
-    const byId = m.mapId && state.game?.maps?.[m.mapId];
-    return byId?.img || "";
-  }
-  const playerIcon = (p) => p.iconImg || (p.icon ? `https://cdn.brawlify.com/profile-icons/regular/${p.icon}.png` : "");
-  const selectedPlayers = () => (state.squad?.players || []).filter((p) => state.selected.includes(p.tag));
-  const inRotation = (m) => (state.meta.rotation || []).some((r) => r.map === m.map && r.mode === m.mode);
+  const modeTag = (mode) => `<span class="mode-tag" style="--mode:${modeColor(mode)}">${modeIcon(mode)}${esc(modeInfo(mode).name)}</span>`;
+  const mapImg = (m) => (m.mapId && state.game?.maps?.[m.mapId]?.img) || "";
+  const artStyle = (m) => { const i = mapImg(m); return i ? `background-image:url('${esc(i)}')` : ""; };
   const mapKey = (m) => m.mode + "|" + m.map;
-  const shortDate = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const mapHref = (m) => "#/map/" + encodeURIComponent(mapKey(m));
+  const playerIcon = (p) => p.iconImg || (p.icon ? `https://cdn.brawlify.com/profile-icons/regular/${p.icon}.png` : "");
+  const avatar = (p) => { const i = playerIcon(p); return i ? `<img src="${esc(i)}" alt="">` : `<span class="ph">${esc(p.name[0])}</span>`; };
+  const selectedPlayers = () => (state.squad?.players || []).filter((p) => state.selected.includes(p.tag));
+  const liveSlot = (m) => (state.rotation || []).find((r) => r.map === m.map && r.mode === m.mode && apiTime(r.end) > Date.now());
+  const model = (key) => E.mapModel(state.meta, key, state.totals);
+  const recommend = (md, players, limit) => E.recommend(md, players, { minPower: state.minPower, limit, now: Date.now() });
 
-  // ---------- squad bar ----------
-  function renderWho() {
+  // ---------- squad picker ----------
+  function picker(compact) {
     const players = state.squad?.players || [];
-    if (!players.length) {
-      who.innerHTML = `<span class="chip empty">No profiles yet — add tags to squad.config.json</span>`;
-      return;
-    }
-    who.innerHTML = players
-      .map((p) => {
-        const icon = playerIcon(p);
-        const on = state.selected.includes(p.tag);
-        return `<button class="chip" type="button" data-tag="${esc(p.tag)}" aria-pressed="${on}">${icon ? `<img src="${esc(icon)}" alt="">` : `<span class="ini">${esc(p.name[0])}</span>`}${esc(p.name)}</button>`;
-      })
-      .join("");
+    if (!players.length) return `<div class="card picker"><p class="note">No squad yet. Add names and player tags to squad.config.json.</p></div>`;
+    const powers = [[1, "Any"], [9, "9+"], [10, "10+"], [11, "11"]];
+    return `<div class="card picker${compact ? " compact" : ""}">
+      ${compact ? "" : `<div class="picker-head"><span class="label">Who's on?</span><span class="label">${Math.min(state.selected.length, 3)}/3 picked</span></div>`}
+      <div class="players">${players.map((p) => `<button type="button" class="player" data-tag="${esc(p.tag)}" aria-pressed="${state.selected.includes(p.tag)}">
+        ${avatar(p)}<span><b>${esc(p.name)}</b><small>${fmt(p.trophies)} trophies</small></span><span class="tick">${check}</span></button>`).join("")}</div>
+      ${compact ? "" : `<div class="picker-foot"><span class="label">Min power</span><div class="seg" role="group" aria-label="Minimum power">${powers.map(([v, l]) => `<button type="button" data-power="${v}" aria-pressed="${state.minPower === v}">${l}</button>`).join("")}</div></div>`}
+    </div>`;
   }
-  who.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-tag]");
-    if (!btn) return;
-    const tag = btn.dataset.tag;
-    if (state.selected.includes(tag)) state.selected = state.selected.filter((t) => t !== tag);
-    else {
-      state.selected.push(tag);
-      if (state.selected.length > 4) state.selected.shift();
-    }
-    store.set("selected", state.selected);
-    renderWho();
-    route();
-  });
-  minPowerSel.addEventListener("change", () => {
-    state.minPower = +minPowerSel.value;
-    store.set("minPower", state.minPower);
-    route();
-  });
 
-  // ---------- maps list ----------
-  function mapsView() {
+  // ---------- home ----------
+  function homeView() {
+    const players = selectedPlayers();
     const maps = Object.values(state.meta.maps).filter((m) => m.battles >= 3);
-    const rankMode = (m) => (FOCUS.includes(m) ? FOCUS.indexOf(m) - 10 : 0);
-    const modes = [...new Set(maps.map((m) => m.mode))].sort((a, b) => rankMode(a) - rankMode(b) || modeTotal(b) - modeTotal(a));
-    function modeTotal(mode) { return state.totals[mode]?.battles || 0; }
+    const live = maps.filter((m) => FOCUS.includes(m.mode) && liveSlot(m)).sort((a, b) => FOCUS.indexOf(a.mode) - FOCUS.indexOf(b.mode) || b.battles - a.battles);
 
     view.innerHTML = `
-      <div class="page-head">
+      <section class="hero">
         <div>
-          <h1>Pick a map</h1>
-          <p class="sub">${state.selected.length ? "Comps built from " + esc(selectedPlayers().map((p) => p.name).join(", ")) + "'s brawlers." : "Pick who's playing above to get comps from your own brawlers."}</p>
+          <span class="eyebrow">Squad comps · Brawl Ball + Knockout · 3v3</span>
+          <h1>Brawl<br><em>Comps</em></h1>
+          <p class="lede">Pick who's on, and every map shows the best trio <b>built from the brawlers you're actually good on</b>: recent games first, then trophies, then what wins for top players.</p>
         </div>
-      </div>
-      <input class="search" id="q" type="search" placeholder="Search maps or modes" value="${esc(state.query)}" autocomplete="off">
-      <div class="modes" id="modeChips">
-        <button class="mode-chip" data-mode="focus" aria-pressed="${state.mode === "focus"}">Brawl Ball + Knockout</button>
-        <button class="mode-chip" data-mode="all" aria-pressed="${state.mode === "all"}">All modes</button>
-        ${modes.map((m) => `<button class="mode-chip" data-mode="${esc(m)}" aria-pressed="${state.mode === m}">${modeIcon(m)}${esc(modeInfo(m).name)}</button>`).join("")}
-      </div>
-      <div id="groups"></div>`;
+        ${picker(false)}
+      </section>
+
+      ${live.length ? `<section class="section">
+        <div class="section-head"><div><span class="eyebrow">In rotation now</span><h2>Live maps</h2></div></div>
+        <div class="live-grid">${live.map((m) => featureCard(m, players)).join("")}</div>
+      </section>` : ""}
+
+      <section class="section" id="all">
+        <div class="section-head"><div><span class="eyebrow">${fmt(maps.length)} maps with data</span><h2>All maps</h2></div></div>
+        <div class="filters">
+          <div class="seg" role="group" aria-label="Mode" id="filter">
+            ${[["focus", "Brawl Ball + Knockout"], ["brawlBall", "Brawl Ball"], ["knockout", "Knockout"], ["all", "All modes"]].map(([v, l]) => `<button type="button" data-filter="${v}" aria-pressed="${state.filter === v}">${l}</button>`).join("")}
+          </div>
+          <input class="search" id="q" type="search" placeholder="Search maps" value="${esc(state.query)}" autocomplete="off">
+        </div>
+        <div id="groups"></div>
+      </section>`;
 
     const groups = document.getElementById("groups");
+    const rank = (mode) => (FOCUS.includes(mode) ? FOCUS.indexOf(mode) : 9);
+    const modesOrdered = [...new Set(maps.map((m) => m.mode))].sort((a, b) => rank(a) - rank(b) || (state.totals[b]?.battles || 0) - (state.totals[a]?.battles || 0));
     function draw() {
       const q = norm(state.query);
-      const shown = maps.filter((m) => (state.mode === "all" || m.mode === state.mode || (state.mode === "focus" && FOCUS.includes(m.mode))) && (!q || norm(m.map).includes(q) || norm(modeInfo(m.mode).name).includes(q)));
-      if (!shown.length) {
-        groups.innerHTML = `<p class="note">No maps match. Maps only show up once top players have played them in the last couple of weeks.</p>`;
-        return;
-      }
-      const byMode = {};
-      for (const m of shown) (byMode[m.mode] ||= []).push(m);
-      groups.innerHTML = modes
-        .filter((mode) => byMode[mode])
-        .map((mode) => {
-          const list = byMode[mode].sort((a, b) => inRotation(b) - inRotation(a) || b.battles - a.battles);
-          return `<section class="group"><h2>${modeIcon(mode)}${esc(modeInfo(mode).name)}</h2><div class="map-grid">${list.map(mapCard).join("")}</div></section>`;
-        })
-        .join("");
-    }
-    function mapCard(m) {
-      const model = E.mapModel(state.meta, mapKey(m), state.totals);
-      const top = model.topBrawlers(4, 3);
-      const img = mapImg(m);
-      return `<a class="map-card" href="#/map/${encodeURIComponent(mapKey(m))}">
-        <span class="map-thumb" style="${img ? `background-image:url('${esc(img)}')` : ""}"></span>
-        <span class="map-meta">
-          <span class="map-name">${esc(m.map)}${inRotation(m) ? '<span class="badge">Live</span>' : ""}</span>
-          <span class="map-sub">${fmt(m.battles)} battles</span>
-          <span class="minis">${top.map((b) => bImg(b.id)).join("")}</span>
-        </span></a>`;
+      const pass = (m) => (state.filter === "all" || (state.filter === "focus" ? FOCUS.includes(m.mode) : m.mode === state.filter)) && (!q || norm(m.map).includes(q));
+      const shown = maps.filter(pass);
+      if (!shown.length) { groups.innerHTML = `<p class="note">No maps match. A map shows up once top players have played it in the last couple of weeks.</p>`; return; }
+      groups.innerHTML = modesOrdered.map((mode) => {
+        const list = shown.filter((m) => m.mode === mode).sort((a, b) => !!liveSlot(b) - !!liveSlot(a) || b.battles - a.battles);
+        if (!list.length) return "";
+        return `<div class="group"><div class="group-head">${modeIcon(mode)}<h3>${esc(modeInfo(mode).name)}</h3><span class="count">${list.length}</span></div>
+          <ul class="tiles">${list.map((m) => `<li>${tile(m)}</li>`).join("")}</ul></div>`;
+      }).join("");
     }
     draw();
     document.getElementById("q").addEventListener("input", (e) => { state.query = e.target.value; draw(); });
-    document.getElementById("modeChips").addEventListener("click", (e) => {
-      const b = e.target.closest("[data-mode]");
+    document.getElementById("filter").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-filter]");
       if (!b) return;
-      state.mode = b.dataset.mode;
-      document.querySelectorAll("#modeChips [data-mode]").forEach((x) => x.setAttribute("aria-pressed", x.dataset.mode === state.mode));
+      state.filter = b.dataset.filter;
+      store.set("filter", state.filter);
+      document.querySelectorAll("#filter [data-filter]").forEach((x) => x.setAttribute("aria-pressed", x.dataset.filter === state.filter));
       draw();
     });
   }
 
-  // ---------- one map ----------
-  function mapView(key) {
-    const model = E.mapModel(state.meta, key, state.totals);
-    if (!model) {
-      view.innerHTML = `<a class="back" href="#/">← All maps</a><p class="note">No data for this map yet.</p>`;
-      return;
-    }
-    const m = model.info;
-    const img = mapImg(m);
-    const players = selectedPlayers();
-
-    let squadHtml;
-    if (players.length > 3) {
-      squadHtml = `<p class="note">${players.length} people selected, but it's 3v3. Tap whoever's sitting out in the bar above.</p>`;
-    } else if (!players.length) {
-      squadHtml = `<p class="note">Tap who's playing in the bar above and this turns into comps built from your own brawlers.</p>`;
+  function featureCard(m, players) {
+    const md = model(mapKey(m));
+    const slot = liveSlot(m);
+    const hoursLeft = slot ? Math.max(0, Math.round((apiTime(slot.end) - Date.now()) / 36e5)) : 0;
+    let pick = "";
+    if (players.length >= 1 && players.length <= 3) {
+      const r = recommend(md, players, 1)[0];
+      if (r) pick = `<span class="trio">${r.picks.map((p) => bImg(p.id)).join("")}</span><span><span class="pct-big">${pct(r.comp.p)}</span><br><span class="pct-cap">your best comp</span></span>`;
     } else {
-      const recs = E.recommend(model, players, { minPower: state.minPower, limit: players.length === 1 ? 8 : 6, now: Date.now() });
-      if (!recs.length) squadHtml = `<p class="note">Nobody selected owns a brawler at power ${state.minPower}+.</p>`;
-      else if (players.length === 1) squadHtml = soloPicks(recs, players[0]);
-      else squadHtml = recs.map((r, i) => compRow(r, players, i === 0)).join("");
+      const top = md.topBrawlers(3, 10);
+      pick = `<span class="trio">${top.map((b) => bImg(b.id)).join("")}</span><span class="pct-cap">${players.length > 3 ? "pick 3 people for your comp" : "top brawlers here"}</span>`;
     }
-
-    const topB = model.topBrawlers(15, 3);
-    const topTrios = model.topTeams("trios", 8, 4);
-    const topPairs = model.topTeams("pairs", 8, 6);
-
-    view.innerHTML = `
-      <a class="back" href="#/">← All maps</a>
-      <div class="map-hero">
-        <span class="map-thumb" style="${img ? `background-image:url('${esc(img)}')` : ""}"></span>
-        <div>
-          <div class="mode-line">${modeIcon(m.mode)}${esc(modeInfo(m.mode).name)}${inRotation(m) ? '<span class="badge">Live</span>' : ""}</div>
-          <h1>${esc(m.map)}</h1>
-          <p class="sub">${fmt(m.battles)} top-player battles${m.ranked ? ` · ${fmt(m.ranked)} in Ranked` : ""}</p>
-        </div>
-      </div>
-
-      <section class="section">
-        <h2>${players.length ? "Your comps" : "Your squad"}</h2>
-        <p class="sub">Ranked by what ${players.length > 1 ? "each of you is" : "you're"} good on first (recent games, then highest trophies), then by the meta. The % is how the comp does for top players on this map.</p>
-        ${squadHtml}
-      </section>
-
-      <section class="section">
-        <h2>Meta on this map</h2>
-        <p class="sub">From top-player battles, win rates pulled toward each brawler's mode average until there's enough games.</p>
-        <div class="cols">
-          <div class="panel">${brawlerTable(model, topB)}</div>
-          <div class="panel">
-            ${topTrios.length ? `<h3 style="margin-top:0">Best trios</h3>${teamTable(topTrios)}` : ""}
-            ${topPairs.length ? `<h3 ${topTrios.length ? "" : 'style="margin-top:0"'}>Best pairs</h3>${teamTable(topPairs)}` : ""}
-            ${!topTrios.length && !topPairs.length ? `<p class="sub">Not enough games yet to rank whole teams.</p>` : ""}
-          </div>
-        </div>
-      </section>`;
+    return `<a class="card feature" href="${mapHref(m)}">
+      <span class="art" style="${artStyle(m)}"></span>
+      <span>
+        ${modeTag(m.mode)}
+        <h3>${esc(m.map)}</h3>
+        <span class="sub">${hoursLeft ? `${hoursLeft}h left · ` : ""}${fmt(m.battles)} battles</span>
+        <span class="pick-row">${pick}</span>
+      </span>
+    </a>`;
   }
 
-  function ownersOf(id) {
-    return (state.squad?.players || []).filter((p) => p.brawlers.some((b) => b.id === id && b.power >= state.minPower)).map((p) => p.name);
+  function tile(m) {
+    const top = model(mapKey(m)).topBrawlers(4, 3);
+    return `<a class="card tile" href="${mapHref(m)}" style="--mode:${modeColor(m.mode)}">
+      <span class="art" style="${artStyle(m)}">${liveSlot(m) ? '<span class="live">Live</span>' : ""}</span>
+      <span class="body">
+        <span class="mode-tag">${esc(modeInfo(m.mode).name)}</span>
+        <h4>${esc(m.map)}</h4>
+        <span class="meta"><span class="num">${fmt(m.battles)} battles</span><span class="mini">${top.map((b) => bImg(b.id)).join("")}</span></span>
+      </span>
+    </a>`;
   }
 
-  // "15-10 · #2 🏆": last 30 days on this brawler (any mode), and where it ranks in their highest trophies.
+  // ---------- one map ----------
   function trophyRank(player, id) {
     const mine = player.brawlers.find((b) => b.id === id)?.highest || 0;
     return 1 + player.brawlers.filter((b) => (b.highest || 0) > mine).length;
   }
+  const record = (pers) => `${pers.recentWins}-${pers.recentGames - pers.recentWins}`;
   function form(pers, player, id) {
-    const bits = [];
-    if (pers.recentGames) bits.push(`${pers.recentWins}-${pers.recentGames - pers.recentWins} last 30d`);
-    bits.push(`#${trophyRank(player, id)} trophies`);
+    const bits = [`P${pers.owned.power}`];
+    if (pers.recentGames) bits.push(`${record(pers)} last 30d`);
+    bits.push(`#${trophyRank(player, id)} in trophies`);
     return bits.join(" · ");
   }
 
-  function slot(pick, player) {
-    const pers = pick.pers;
-    return `<div class="slot">
-      <span class="who">${esc(player.name)}</span>
-      ${bImg(pick.id)}
-      <span class="bn">${esc(bName(pick.id))}</span>
-      <span class="why">P${pers.owned.power} · ${esc(form(pers, player, pick.id))}</span>
-    </div>`;
+  function mapView(key) {
+    const md = model(key);
+    if (!md) { view.innerHTML = `<nav class="crumbs"><a href="#/">Maps</a></nav><p class="note">No data for this map yet.</p>`; return; }
+    const m = md.info;
+    const players = selectedPlayers();
+    const best = md.topBrawlers(1, 10)[0];
+
+    let comps;
+    if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
+    else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
+    else {
+      const recs = recommend(md, players, players.length === 1 ? 8 : 6);
+      comps = recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>` : `<p class="note">Nobody picked owns a brawler at power ${state.minPower}+.</p>`;
+    }
+
+    view.innerHTML = `
+      <nav class="crumbs"><a href="#/">Maps</a><span>/</span><span>${esc(modeInfo(m.mode).name)}</span></nav>
+      <header class="map-head">
+        <span class="art" style="${artStyle(m)}"></span>
+        <div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${modeTag(m.mode)}${liveSlot(m) ? '<span class="live">Live</span>' : ""}</div>
+          <h1>${esc(m.map)}</h1>
+          <div class="stats">
+            <div class="stat"><span class="label">Battles</span><b>${fmt(m.battles)}</b></div>
+            <div class="stat"><span class="label">Brawlers seen</span><b>${Object.keys(m.brawlers).length}</b></div>
+            ${best ? `<div class="stat"><span class="label">Best brawler</span><b>${esc(bName(best.id))}</b></div>` : ""}
+          </div>
+        </div>
+      </header>
+
+      <section class="section">
+        <div class="section-head"><div><span class="eyebrow">Ranked for your squad</span><h2>Your comps</h2>
+          <p>What each of you is good on comes first (recent games, then highest trophies), then the meta. The % is how that comp does for top players on this map.</p></div></div>
+        ${picker(true)}
+        <div style="height:12px"></div>
+        ${comps}
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><span class="eyebrow">Top-player battles</span><h2>Meta</h2></div>
+          <div class="seg" role="group" aria-label="Meta view" id="metaTabs">${[["brawlers", "Brawlers"], ["trios", "Trios"], ["pairs", "Pairs"]].map(([v, l]) => `<button type="button" data-meta="${v}" aria-pressed="${state.metaTab === v}">${l}</button>`).join("")}</div>
+        </div>
+        <div class="card panel"><div class="table-wrap" id="metaBody"></div></div>
+      </section>`;
+
+    const body = document.getElementById("metaBody");
+    const drawMeta = () => { body.innerHTML = state.metaTab === "brawlers" ? brawlerTable(md) : teamTable(md, state.metaTab); };
+    drawMeta();
+    document.getElementById("metaTabs").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-meta]");
+      if (!b) return;
+      state.metaTab = b.dataset.meta;
+      document.querySelectorAll("#metaTabs [data-meta]").forEach((x) => x.setAttribute("aria-pressed", x.dataset.meta === state.metaTab));
+      drawMeta();
+    });
   }
 
-  function compRow(r, players, best) {
+  function compRow(r, players, i) {
     const seen = r.comp.trio ? ` · ${fmt(r.comp.trio.games)} games seen` : "";
-    return `<div class="comp${best ? " best" : ""}">
-      <div class="slots" style="--n:${players.length}">${r.picks.map((p, i) => slot(p, players[i])).join("")}</div>
-      <div class="score"><div class="pct">${pct(r.comp.p)}</div><div class="lbl">top players${seen}</div></div>
-    </div>`;
+    return `<article class="card comp${i === 0 ? " top" : ""}">
+      <span class="rank">${String(i + 1).padStart(2, "0")}</span>
+      <div class="slots" style="--n:${players.length}">${r.picks.map((p, j) => `<div class="slot">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></div>`).join("")}</div>
+      <div class="score">${i === 0 ? '<span class="top-badge">Top pick</span>' : ""}<div class="pct-big">${pct(r.comp.p)}</div><div class="pct-cap">top players${seen}</div></div>
+    </article>`;
   }
 
-  function soloPicks(recs, player) {
-    return `<div class="panel"><table><thead><tr><th>${esc(player.name)}'s best picks</th><th class="num">Last 30d</th><th class="num">Trophies</th><th class="num">Map win</th></tr></thead><tbody>
-      ${recs.map((r) => { const c = r.picks[0]; const pr = c.pers; return `<tr><td><span class="bcell">${bImg(c.id)}<span>${esc(bName(c.id))}<br><span class="owned-by">P${pr.owned.power}</span></span></span></td><td class="num">${pr.recentGames ? `${pr.recentWins}-${pr.recentGames - pr.recentWins}` : "—"}</td><td class="num">${fmt(pr.owned.highest || 0)}<br><span class="owned-by">#${trophyRank(player, c.id)}</span></td><td class="num">${pct(c.meta.p)}</td></tr>`; }).join("")}
-    </tbody></table></div>`;
-  }
+  // Win rate with a bar scaled from 30% (empty) to 70% (full).
+  const wr = (p) => `<span class="wr"><span class="num ${p >= 0.5 ? "pos" : "neg"}">${pct(p)}</span><i style="--w:${Math.max(0, Math.min(100, ((p - 0.3) / 0.4) * 100))}%;--c:${p >= 0.5 ? "var(--good)" : "var(--bad)"}"></i></span>`;
 
-  function brawlerTable(model, list) {
-    const maxPick = Math.max(...list.map((b) => b.pick), 0.0001);
-    return `<h3 style="margin-top:0">Top brawlers</h3><table><thead><tr><th>Brawler</th><th class="num">Win</th><th class="num">Pick</th><th class="num">Games</th></tr></thead><tbody>
-      ${list.map((b) => {
-        const owners = ownersOf(b.id);
-        return `<tr><td><span class="bcell">${bImg(b.id)}<span>${esc(bName(b.id))}${owners.length ? `<br><span class="owned-by">${esc(owners.join(", "))}</span>` : ""}</span></span></td>
-        <td class="num ${b.p >= 0.5 ? "pos" : "neg"}">${pct(b.p)}</td>
-        <td class="num">${pct(b.pick)}<div class="bar"><i style="width:${(b.pick / maxPick) * 100}%"></i></div></td>
-        <td class="num">${fmt(b.games)}</td></tr>`;
-      }).join("")}
+  function brawlerTable(md) {
+    const list = md.topBrawlers(20, 3);
+    const owners = (id) => (state.squad?.players || []).filter((p) => p.brawlers.some((b) => b.id === id && b.power >= state.minPower)).map((p) => p.name);
+    return `<table><thead><tr><th>Brawler</th><th class="num">Win rate</th><th class="num hide-sm">Pick rate</th><th class="num">Games</th></tr></thead><tbody>
+      ${list.map((b) => { const o = owners(b.id); return `<tr><td><span class="bcell">${bImg(b.id)}<span>${esc(bName(b.id))}${o.length ? `<span class="owners">${esc(o.join(", "))}</span>` : ""}</span></span></td><td class="num">${wr(b.p)}</td><td class="num hide-sm">${pct(b.pick)}</td><td class="num">${fmt(b.games)}</td></tr>`; }).join("")}
     </tbody></table>`;
   }
 
-  function teamTable(list) {
-    return `<table><thead><tr><th>Team</th><th class="num">Win</th><th class="num">Games</th></tr></thead><tbody>
-      ${list.map((t) => `<tr><td><span class="team-cell">${t.ids.map((id) => bImg(id)).join("")}</span></td><td class="num ${t.p >= 0.5 ? "pos" : "neg"}">${pct(t.p)}</td><td class="num">${fmt(t.games)}</td></tr>`).join("")}
+  function teamTable(md, field) {
+    const list = md.topTeams(field, 12, field === "trios" ? 4 : 6);
+    if (!list.length) return `<p class="note" style="margin:10px 0">Not enough games yet to rank ${field} on this map.</p>`;
+    return `<table><thead><tr><th>${field === "trios" ? "Trio" : "Pair"}</th><th class="num">Win rate</th><th class="num">Games</th></tr></thead><tbody>
+      ${list.map((t) => `<tr><td><span class="team-cell">${t.ids.map(bImg).join("")}<span class="team-names hide-sm">${esc(t.ids.map(bName).join(" · "))}</span></span></td><td class="num">${wr(t.p)}</td><td class="num">${fmt(t.games)}</td></tr>`).join("")}
     </tbody></table>`;
   }
 
   // ---------- squad ----------
   function squadView() {
     const players = state.squad?.players || [];
-    if (!players.length) {
-      view.innerHTML = `<div class="page-head"><h1>Squad</h1></div><p class="note">No profiles yet. Add each person's name and player tag to <code>squad.config.json</code>; the next weekly update pulls their brawlers.</p>`;
-      return;
-    }
-    const others = Object.entries(state.totals).filter(([m]) => !FOCUS.includes(m)).sort((a, b) => b[1].battles - a[1].battles).slice(0, 6).map(([m]) => m);
-    const models = Object.keys(state.meta.maps).map((k) => E.mapModel(state.meta, k, state.totals));
+    if (!players.length) { view.innerHTML = `<p class="note">No squad yet. Add names and player tags to squad.config.json.</p>`; return; }
+    const models = Object.keys(state.meta.maps).map(model);
     const now = Date.now();
-    const DAY = 864e5;
 
-    // A player's best brawlers for a mode: their personal fit plus average meta strength over that mode's maps.
-    function bestForMode(p, mode, n) {
+    // Best brawlers for a mode: personal fit plus average meta strength over that mode's maps.
+    function bestFor(p, mode, n) {
       const ms = models.filter((md) => md.info.mode === mode);
       const w = ms.reduce((s, md) => s + md.info.battles, 0) || 1;
       return p.brawlers
         .filter((b) => b.power >= state.minPower)
         .map((b) => {
+          const pers = E.personal(p, b.id, { mode, now });
           const L = ms.reduce((s, md) => s + md.brawler(b.id).L * md.info.battles, 0) / w;
-          return { id: b.id, s: L + E.personal(p, b.id, { mode, now }).L };
+          return { id: b.id, pers, s: L + pers.L };
         })
         .sort((a, b) => b.s - a.s)
         .slice(0, n);
     }
-    const row = (p, mode, n) => `<div class="mode-row"><span class="lab">${modeIcon(mode)}${esc(modeInfo(mode).name)}</span><span class="picks">${bestForMode(p, mode, n).map((b) => bImg(b.id)).join("")}</span></div>`;
 
-    view.innerHTML = `<div class="page-head"><div><h1>Squad</h1><p class="sub">Brawlers as of ${esc(shortDate(state.squad.updated))}. Games are tracked from when each person was added.</p></div></div>
+    view.innerHTML = `
+      <div class="section-head"><div><span class="eyebrow">${players.length} players · brawlers as of ${esc(shortDate(state.squad.updated))}</span><h2 style="font-size:clamp(48px,9vw,88px)">Squad</h2>
+        <p>Best picks weigh what each of you has been playing and winning with lately, then your highest trophies, then the meta for that mode.</p></div></div>
       <div class="profiles">${players.map((p) => {
-        const maxed = p.brawlers.filter((b) => b.power >= 11).length;
         const games = p.games || [];
         const month = games.filter((g) => now - g[0] <= 30 * DAY);
+        const mWins = month.reduce((s, g) => s + g[3], 0);
         const byB = {};
         for (const [, id, , won] of month) { const c = (byB[id] ||= [0, 0]); c[0]++; c[1] += won; }
         const mostPlayed = Object.entries(byB).sort((a, b) => b[1][0] - a[1][0]).slice(0, 5);
         const topTrophies = [...p.brawlers].sort((a, b) => (b.highest || 0) - (a.highest || 0)).slice(0, 5);
         const tog = {};
         for (const [, , , won, mates] of games) if (mates?.length) { const k = mates.join(","); const c = (tog[k] ||= [0, 0]); c[0]++; c[1] += won; }
-        const together = Object.entries(tog).map(([tags, [g, w]]) => ({ names: tags.split(",").map((t) => players.find((x) => x.tag === t)?.name || t), g, w })).sort((a, b) => b.g - a.g);
-        const mWins = month.reduce((s, g) => s + g[3], 0);
-        const icon = playerIcon(p);
-        return `<article class="panel profile">
-          <div class="prof-head">${icon ? `<img src="${esc(icon)}" alt="">` : `<span class="ini">${esc(p.name[0])}</span>`}<div><h2>${esc(p.name)}</h2><span class="sub">${esc(p.ign)} · ${esc(p.tag)}</span></div></div>
-          <div class="stats">
-            <div class="stat"><b>${fmt(p.trophies)}</b><span>Trophies</span></div>
-            <div class="stat"><b>${month.length ? pct(mWins / month.length) : "—"}</b><span>Won, 30 days</span></div>
-            <div class="stat"><b>${maxed}</b><span>Power 11</span></div>
+        const together = Object.entries(tog).map(([tags, [g, w]]) => ({ names: tags.split(",").map((t) => players.find((x) => x.tag === t)?.name || t), g, w })).sort((a, b) => b.g - a.g).slice(0, 4);
+        return `<article class="card profile">
+          <div class="prof-head">${avatar(p)}<div><h2>${esc(p.name)}</h2><span class="num">${esc(p.ign)} · ${esc(p.tag)}</span></div></div>
+          <div class="kpis">
+            <div class="kpi"><span class="label">Trophies</span><b>${fmt(p.trophies)}</b></div>
+            <div class="kpi"><span class="label">Won, 30 days</span><b>${month.length ? pct(mWins / month.length) : "—"}</b></div>
+            <div class="kpi"><span class="label">Power 11</span><b>${p.brawlers.filter((b) => b.power >= 11).length}<span class="muted" style="font-size:15px">/${p.brawlers.length}</span></b></div>
           </div>
-          <h3>Best picks</h3>
-          <div class="mode-picks">${FOCUS.map((m) => row(p, m, 6)).join("")}</div>
-          <details class="more"><summary>Other modes</summary><div class="mode-picks">${others.map((m) => row(p, m, 4)).join("")}</div></details>
-          ${mostPlayed.length ? `<h3>Most played, last 30 days</h3>
-            <table><tbody>${mostPlayed.map(([id, [g, w]]) => `<tr><td><span class="bcell">${bImg(+id)}${esc(bName(+id))}</span></td><td class="num">${w}-${g - w}</td></tr>`).join("")}</tbody></table>` : ""}
-          <h3>Highest trophies</h3>
-          <table><tbody>${topTrophies.map((b) => `<tr><td><span class="bcell">${bImg(b.id)}${esc(bName(b.id))}</span></td><td class="num">${fmt(b.highest || 0)}</td></tr>`).join("")}</tbody></table>
-          ${together.length ? `<h3>Playing together</h3><table><tbody>${together.map((t) => `<tr><td>with ${esc(t.names.join(" + "))}</td><td class="num">${t.w}-${t.g - t.w}</td></tr>`).join("")}</tbody></table>` : ""}
+          ${FOCUS.map((mode) => `<div class="picks"><h3>${modeIcon(mode)}Best in ${esc(modeInfo(mode).name)}</h3><div class="pick-list">${bestFor(p, mode, 5).map((x) => `<div class="pick">${bImg(x.id)}<span>${esc(bName(x.id))}</span><small>${x.pers.recentGames ? record(x.pers) : `#${trophyRank(p, x.id)} trophies`}</small></div>`).join("")}</div></div>`).join("")}
+          <div class="two">
+            <div class="mini-table"><h4>Most played · 30 days</h4>${mostPlayed.length ? `<table><tbody>${mostPlayed.map(([id, [g, w]]) => `<tr><td><span class="bcell">${bImg(+id)}${esc(bName(+id))}</span></td><td class="num">${w}-${g - w}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">No tracked games yet.</p>`}</div>
+            <div class="mini-table"><h4>Highest trophies</h4><table><tbody>${topTrophies.map((b) => `<tr><td><span class="bcell">${bImg(b.id)}${esc(bName(b.id))}</span></td><td class="num">${fmt(b.highest || 0)}</td></tr>`).join("")}</tbody></table></div>
+          </div>
+          ${together.length ? `<div class="mini-table"><h4>Playing together</h4><table><tbody>${together.map((t) => `<tr><td>with ${esc(t.names.join(" + "))}</td><td class="num">${t.w}-${t.g - t.w}</td></tr>`).join("")}</tbody></table></div>` : ""}
         </article>`;
       }).join("")}</div>`;
   }
 
-  // ---------- about ----------
-  function aboutView() {
+  // ---------- method ----------
+  function methodView() {
     const s = state.meta.sample || {};
     view.innerHTML = `<article class="prose">
-      <h1 style="font-size:40px">How it works</h1>
-      <h2>Where the numbers come from</h2>
-      <p>Every Monday a GitHub Action pulls the last 25 battles of about ${fmt(s.players || 0)} top-ranked players (global plus ~20 country leaderboards) from the official Brawl Stars API. Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last update: ${fmt(s.battles || 0)} battles. The previous week's counts stay in at half weight so smaller maps keep a sample.</p>
-      <p>Top players win far more than half their games${s.sampledSideWin?.all ? ` (${s.sampledSideWin.all}% last update)` : ""}, so anything they pick would look stronger than it is. That edge is measured each week and taken back out, so the win rates here are about the brawlers, not the players.</p>
-      <h2>How comps are ranked</h2>
+      <span class="eyebrow">How the picks are made</span>
+      <h1>Method</h1>
+      <p>Two things go into every comp: what each of us has been good on, and how brawlers do on that map for top players.</p>
+      <div class="facts">
+        <div><span class="label">Battles, last pull</span><b>${fmt(s.battles || 0)}</b></div>
+        <div><span class="label">Top players sampled</span><b>${fmt(s.players || 0)}</b></div>
+        <div><span class="label">Top-player side wins</span><b>${s.sampledSideWin?.all ? s.sampledSideWin.all + "%" : "—"}</b></div>
+      </div>
+      <h2>What you're good on</h2>
       <ul>
-        <li><b>Brawler on a map:</b> win rate on that map, pulled toward the brawler's win rate across the whole mode. How hard it's pulled is fitted from the data, so a 4-0 brawler doesn't top the list.</li>
-        <li><b>Pairs and trios:</b> if a pair or exact trio has been seen, its record nudges the score up or down versus what the individual brawlers predict.</li>
-        <li><b>What you're good on comes first:</b> only brawlers each person owns at the chosen power or higher. Recent games count most (a game three weeks old counts half; other modes count half), both your record and how much you've been playing a brawler. Then highest trophies: your best brawler gets a boost, your worst a penalty. Every power level under 11 costs a little. These weights are judgment calls, not fitted, since there aren't enough squad games to test them.</li>
+        <li>Only brawlers each person owns at the chosen power or higher.</li>
+        <li><b>Recent games count most:</b> your record on a brawler and how much you've been playing it. A game three weeks old counts half as much as one today, and games in other modes count half.</li>
+        <li><b>Then highest trophies:</b> your best brawler by highest trophies gets a boost, your lowest a penalty.</li>
+        <li>Every power level under 11 costs a little.</li>
+        <li>These weights follow that order of priority. There aren't enough of our games yet to fit them from data.</li>
       </ul>
-      <p>A comp's % is its estimated chance against an average team of equally skilled players. The model was checked by building it from half the top players and predicting games of the other half: after tuning, its percentages matched how often teams actually won.</p>
+      <h2>The meta</h2>
+      <p>Every Monday the official Brawl Stars API gives the last 25 battles of about ${fmt(s.players || 3000)} top-ranked players. Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last week's counts stay in at half weight so smaller maps keep a sample.</p>
+      <p>Top players win far more than half their games, so whatever they pick would look stronger than it is. That edge is measured each week and taken back out. Win rates are pulled toward each brawler's mode-wide rate until there are enough games, so a 4-0 brawler doesn't top the list. Pair and trio records count only lightly, because they mostly reflect a few pre-made top teams.</p>
+      <p>The model was checked by building it from half the top players and predicting games of the other half. After tuning, its percentages matched how often teams actually won.</p>
       <h2>What it can't tell you</h2>
       <ul>
-        <li><b>Picks matter less than skill.</b> On players the model hadn't seen, knowing both teams' brawlers only raised the share of games called correctly from 64.3% to 64.8%. Comps tilt the odds; they don't decide games.</li>
+        <li><b>Picks matter less than skill.</b> On players the model hadn't seen, knowing both teams' brawlers raised the share of games called correctly only from 64.3% to 64.8%. A better comp tilts the odds a few points.</li>
         <li>It's top-player data. What wins at the top isn't always what wins at lower trophies.</li>
-        <li>Pair and trio records mostly come from a few pre-made top teams, so part of "this trio wins" is "these players win". The model leans on them only lightly for that reason.</li>
-        <li>Unless a comp says "games seen", that exact trio wasn't played enough to measure; the % is built from its brawlers and pairs.</li>
-        <li>Balance changes show up the next Monday, and the first week after a patch mixes old and new data.</li>
-        <li>The API only returns each player's last 25 battles. Squad games are pulled every day, so only a day with more than 25 games loses some.</li>
-        <li>The "Live" badge is the rotation at update time; maps rotate daily, so it goes stale during the week.</li>
+        <li>Balance changes show up the next Monday.</li>
+        <li>The API only shows each player's last 25 games. Squad games are pulled daily, so only a day with more than 25 loses some.</li>
       </ul>
-      <p>Brawler and map art from <a href="https://brawlify.com">Brawlify</a>. Data from the official Brawl Stars API via RoyaleAPI's proxy. Not affiliated with Supercell.</p>
     </article>`;
   }
 
-  // ---------- routing ----------
-  function route() {
-    if (!state.meta) return;
-    const h = location.hash.replace(/^#\/?/, "");
-    let tab = "maps";
-    if (h.startsWith("map/")) mapView(decodeURIComponent(h.slice(4)));
-    else if (h === "squad") { tab = "squad"; squadView(); }
-    else if (h === "about") { tab = "about"; aboutView(); }
-    else mapsView();
-    document.querySelectorAll(".tabs a").forEach((a) => (a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
-  }
-  window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+  // ---------- events ----------
+  view.addEventListener("click", (e) => {
+    const p = e.target.closest("[data-tag]");
+    if (p) {
+      const tag = p.dataset.tag;
+      if (state.selected.includes(tag)) state.selected = state.selected.filter((t) => t !== tag);
+      else { state.selected.push(tag); if (state.selected.length > 4) state.selected.shift(); }
+      store.set("selected", state.selected);
+      rerender();
+      return;
+    }
+    const pw = e.target.closest("[data-power]");
+    if (pw) { state.minPower = +pw.dataset.power; store.set("minPower", state.minPower); rerender(); }
+  });
+  // Picker clicks re-render in place, without the page-enter animation or a jump to the top.
+  function rerender() { const y = window.scrollY; route(true); window.scrollTo(0, y); }
+
   // Brawlify sometimes lacks art for the newest brawlers; swap a broken portrait for its initials.
   document.addEventListener("error", (e) => {
     const img = e.target;
     if (img.tagName !== "IMG" || !img.alt) return;
     const ph = document.createElement("span");
-    ph.className = "ph " + img.className;
+    ph.className = "ph";
     ph.title = img.alt;
     ph.textContent = img.alt.slice(0, 2);
     img.replaceWith(ph);
   }, true);
 
+  // ---------- routing ----------
+  function route(inPlace) {
+    if (!state.meta) return;
+    const h = location.hash.replace(/^#\/?/, "");
+    let tab = "maps";
+    if (!inPlace) { view.style.animation = "none"; void view.offsetWidth; view.style.animation = ""; }
+    if (h.startsWith("map/")) mapView(decodeURIComponent(h.slice(4)));
+    else if (h === "squad") { tab = "squad"; squadView(); }
+    else if (h === "method") { tab = "method"; methodView(); }
+    else homeView();
+    document.querySelectorAll(".links a").forEach((a) => (a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+  }
+  window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+
   async function load() {
-    const get = (f) => fetch("data/" + f, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null));
-    const [game, meta, squad] = await Promise.all([get("game.json"), get("meta.json"), get("squad.json")]);
-    if (!meta) {
-      view.innerHTML = `<p class="note">No data yet. The first weekly update hasn't run.</p>`;
-      return;
-    }
+    const get = (f) => fetch("data/" + f, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const [game, meta, squad, rotation] = await Promise.all([get("game.json"), get("meta.json"), get("squad.json"), get("rotation.json")]);
+    if (!meta) { view.innerHTML = `<p class="note">No data yet. The first update hasn't run.</p>`; return; }
     for (const k of Object.keys(meta.maps)) if (/5v5/i.test(meta.maps[k].mode)) delete meta.maps[k];
-    Object.assign(state, { game, meta, squad: squad || { players: [] }, totals: E.modeTotals(meta) });
+    Object.assign(state, { game, meta, squad: squad || { players: [] }, rotation: rotation?.slots || meta.rotation || [], totals: E.modeTotals(meta) });
     brawlerById = Object.fromEntries((game?.brawlers || []).map((b) => [b.id, b]));
     const tags = new Set(state.squad.players.map((p) => p.tag));
     state.selected = store.get("selected", []).filter((t) => tags.has(t)).slice(0, 4);
     state.minPower = store.get("minPower", 1);
-    minPowerSel.value = String(state.minPower);
-    document.getElementById("foot").innerHTML = `Updated ${esc(shortDate(meta.updated))} from ${fmt(meta.sample?.battles || 0)} top-player battles. Meta refreshes every Monday, squad games daily. Not affiliated with Supercell.`;
-    renderWho();
+    state.filter = store.get("filter", "focus");
+    document.getElementById("stamp").textContent = `Squad ${state.squad.updated ? shortDate(state.squad.updated) : "—"} · Meta ${shortDate(meta.updated)}`;
+    document.getElementById("foot").innerHTML = `<span>Brawl Comps · data from the official Brawl Stars API · art from <a href="https://brawlify.com">Brawlify</a> · not affiliated with Supercell</span><span><a href="https://github.com/andyqueyl/brawl-comps">Source on GitHub</a></span>`;
     route();
   }
-  load().catch((e) => { view.innerHTML = `<p class="note">Couldn't load data: ${esc(e.message)}</p>`; });
+  load().catch((e) => { view.innerHTML = `<p class="note">Couldn't load the data: ${esc(e.message)}</p>`; });
 })();

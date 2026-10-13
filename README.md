@@ -51,3 +51,9 @@ The engine was also checked against a simulated API with planted brawler strengt
 Run it locally with `BS_API_KEY=... node scripts/update.mjs`, then serve the folder (for example `python3 -m http.server`) and open it.
 
 Art from [Brawlify](https://brawlify.com). Data from the official Brawl Stars API. Not affiliated with Supercell.
+
+## Private page
+
+The repo is private, so there's no GitHub Pages site (that needs GitHub Pro). Instead the site is published as a private Claude page: https://claude.ai/artifact/Ftj2CqegvzeGkZhzqkDths
+
+`node scripts/build-artifact.mjs` builds it into `artifact/` (gitignored): one HTML file with the CSS and JS inlined, plus the data files with every portrait, map and icon embedded, since that page can't load images from other sites. To refresh it: `git pull`, run the build, and republish `artifact/brawl-comps.html` with its three `data/` files to the same URL.

@@ -34,7 +34,7 @@
     const byId = m.mapId && state.game?.maps?.[m.mapId];
     return byId?.img || "";
   }
-  const playerIcon = (p) => (p.icon ? `https://cdn.brawlify.com/profile-icons/regular/${p.icon}.png` : "");
+  const playerIcon = (p) => p.iconImg || (p.icon ? `https://cdn.brawlify.com/profile-icons/regular/${p.icon}.png` : "");
   const selectedPlayers = () => (state.squad?.players || []).filter((p) => state.selected.includes(p.tag));
   const inRotation = (m) => (state.meta.rotation || []).some((r) => r.map === m.map && r.mode === m.mode);
   const mapKey = (m) => m.mode + "|" + m.map;

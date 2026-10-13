@@ -4,6 +4,8 @@ Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 on
 
 **Live site:** https://andyqueyl.github.io/brawl-comps/
 
+Maintainers (human or AI): read [`CLAUDE.md`](CLAUDE.md) first. It covers the refresh schedule, the weekly checklist and the pitfalls.
+
 This is a static site (plain HTML and JavaScript). A GitHub Action refreshes squad games and the map rotation daily, and the top-player meta every Monday.
 
 ## What it can't tell you

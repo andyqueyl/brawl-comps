@@ -1,6 +1,6 @@
 # Brawl Comps: handoff notes for AI assistants
 
-Read this before changing anything. `README.md` is the public description; this file holds what you need to maintain the project and keep it honest.
+Read this before changing anything. `README.md` is the public description; this file holds what you need to maintain the project and keep it honest. For the routine weekly check and fixes, use the project skill `.claude/skills/brawl-maintenance/SKILL.md`.
 
 - **Live site:** https://andyqueyl.github.io/brawl-comps/ (GitHub Pages, `main` branch, repo root)
 - **Repo:** https://github.com/andyqueyl/brawl-comps (public; the owner chose that on purpose)

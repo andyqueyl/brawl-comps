@@ -180,7 +180,7 @@
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
       const recs = recommend(md, players, players.length === 1 ? 8 : 6, locked);
-      comps = (players.length > 1 ? lockRow(players, locked) : "") +
+      comps = (players.length > 1 ? lockRow(players, locked, md) : "") +
         (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>` : `<p class="note">Nobody picked owns a brawler at power ${state.minPower}+.</p>`);
     }
 
@@ -227,23 +227,70 @@
   }
 
   // "Already picked" row: lock what people have chosen in the lobby, and the list fills the open spots.
-  function lockRow(players, locked) {
+  // Each open player gets a type-to-search box. Before you type it lists that player's best brawlers
+  // for this map; as you type it narrows by name, names that start with what you typed first.
+  let lockOpts = {};
+  function lockRow(players, locked, md) {
     const open = players.filter((_, i) => locked[i] == null);
     const done = players.length - open.length;
-    const head = !done ? "Already picked in the lobby? Lock it in, or tap a brawler below."
+    const head = !done ? "Someone already picked in the lobby? Type their brawler, or tap one in a comp below."
       : !open.length ? "Everyone's locked in. This is how your comp rates."
-      : `Best ${open.length === 1 ? "pick" : "picks"} for ${open.map((p) => esc(p.name)).join(" and ")} with ${done === 1 ? "that pick" : "those picks"} locked in.`;
+      : `Showing the best ${open.length === 1 ? "pick" : "picks"} for ${open.map((p) => esc(p.name)).join(" and ")}.`;
+    lockOpts = {};
+    const now = Date.now();
     return `<div class="card locks">
-      <div class="locks-head"><span class="label">Already picked</span>${done ? `<button type="button" class="link" data-unlock-all>Clear</button>` : ""}</div>
+      <div class="locks-head"><span class="label">Already picked</span>${done ? `<button type="button" class="link" data-unlock-all>Clear all</button>` : ""}</div>
       <div class="lock-grid" style="--n:${players.length}">${players.map((p, i) => {
-        const taken = new Set(locked.filter((x, j) => x != null && j !== i));
-        const opts = p.brawlers.slice().sort((a, b) => bName(a.id).localeCompare(bName(b.id)))
-          .map((b) => `<option value="${b.id}"${locked[i] === b.id ? " selected" : ""}${taken.has(b.id) ? " disabled" : ""}>${esc(bName(b.id))}</option>`).join("");
-        return `<label class="lock${locked[i] != null ? " on" : ""}"><span class="who">${esc(p.name)}</span>
-          <select data-lock="${esc(p.tag)}"><option value="">Still picking</option>${opts}</select></label>`;
+        if (locked[i] != null) {
+          const id = locked[i];
+          return `<div class="lock on"><span class="who">${esc(p.name)}</span>
+            <div class="chosen">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-unlock="${esc(p.tag)}" aria-label="Unlock ${esc(bName(id))} for ${esc(p.name)}">×</button></div></div>`;
+        }
+        const taken = new Set(locked.filter((x) => x != null));
+        lockOpts[p.tag] = p.brawlers.filter((b) => !taken.has(b.id)).map((b) => {
+          const meta = md.brawler(b.id);
+          const pers = E.personal(p, b.id, { mode: md.info.mode, now });
+          return { id: b.id, name: bName(b.id), lower: bName(b.id).toLowerCase(), power: b.power, p: meta.p, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
+        }).sort((a, b) => b.fit - a.fit);
+        return `<div class="lock"><label class="who" for="lk-${i}">${esc(p.name)}</label>
+          <div class="combo"><input id="lk-${i}" data-lock-input="${esc(p.tag)}" type="text" placeholder="Type a brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
+            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lk-list-${i}"><ul class="combo-list" id="lk-list-${i}" role="listbox" hidden></ul></div></div>`;
       }).join("")}</div>
       <p class="locks-note">${head}</p>
     </div>`;
+  }
+
+  function comboMatches(tag, q) {
+    const all = lockOpts[tag] || [];
+    q = q.trim().toLowerCase();
+    if (!q) return all.slice(0, 6);
+    const starts = all.filter((o) => o.lower.startsWith(q)), rest = all.filter((o) => !o.lower.startsWith(q) && o.lower.includes(q));
+    return [...starts, ...rest].slice(0, 8);
+  }
+  function drawCombo(input, active = 0) {
+    const list = input.nextElementSibling;
+    const q = input.value;
+    const items = comboMatches(input.dataset.lockInput, q);
+    input._items = items;
+    input._active = Math.min(active, items.length - 1);
+    list.innerHTML = (!q.trim() && items.length ? `<li class="combo-head" role="presentation">Best for this map</li>` : "") +
+      (items.length ? items.map((o, k) => `<li role="option" id="${input.id}-o${k}" data-k="${k}" aria-selected="${k === input._active}">${bImg(o.id)}<span><b>${esc(o.name)}</b><small>${pct(o.p)} here · P${o.power}</small></span></li>`).join("")
+        : `<li class="combo-empty" role="presentation">No brawler they own matches “${esc(q.trim())}”</li>`);
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    if (input._active >= 0) input.setAttribute("aria-activedescendant", `${input.id}-o${input._active}`);
+    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }
+  function closeCombo(input) {
+    input.nextElementSibling.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+  function lockIn(tag, id, fromKeyboard) {
+    state.locks[tag] = id;
+    rerender();
+    // Typing flow: jump straight to the next person who hasn't picked.
+    if (fromKeyboard) view.querySelector("[data-lock-input]")?.focus();
   }
 
   function compRow(r, players, i) {
@@ -376,6 +423,13 @@
     }
     const pw = e.target.closest("[data-power]");
     if (pw) { state.minPower = +pw.dataset.power; store.set("minPower", state.minPower); rerender(); return; }
+    const li = e.target.closest(".combo-list [data-k]");
+    if (li) {
+      const i = li.closest(".combo").querySelector("[data-lock-input]");
+      const o = i._items?.[+li.dataset.k];
+      if (o) lockIn(i.dataset.lockInput, o.id, false);
+      return;
+    }
     // Tapping a brawler in a comp locks it in for that player (or unlocks it). Only with 2+ people on.
     const s = e.target.closest("[data-pick]");
     if (s && selectedPlayers().length > 1) {
@@ -388,15 +442,33 @@
       rerender();
       return;
     }
+    const un = e.target.closest("[data-unlock]");
+    if (un) { const tag = un.dataset.unlock; delete state.locks[tag]; rerender(); view.querySelector(`[data-lock-input="${CSS.escape(tag)}"]`)?.focus(); return; }
     if (e.target.closest("[data-unlock-all]")) { state.locks = {}; rerender(); }
   });
-  view.addEventListener("change", (e) => {
-    const sel = e.target.closest("[data-lock]");
-    if (!sel) return;
-    if (sel.value) state.locks[sel.dataset.lock] = +sel.value;
-    else delete state.locks[sel.dataset.lock];
-    rerender();
+  // Type-to-search boxes in the "Already picked" row.
+  view.addEventListener("focusin", (e) => { const i = e.target.closest("[data-lock-input]"); if (i) drawCombo(i); });
+  view.addEventListener("input", (e) => { const i = e.target.closest("[data-lock-input]"); if (i) drawCombo(i); });
+  view.addEventListener("focusout", (e) => {
+    const i = e.target.closest("[data-lock-input]");
+    // A short delay lets a tap on a suggestion register before the list closes (phones blur first).
+    if (i) setTimeout(() => { if (document.activeElement !== i && i.isConnected) closeCombo(i); }, 150);
   });
+  view.addEventListener("keydown", (e) => {
+    const i = e.target.closest("[data-lock-input]");
+    if (!i || !i._items) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = i._items.length;
+      if (n) drawCombo(i, (i._active + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const o = i._items[i._active];
+      if (o) lockIn(i.dataset.lockInput, o.id, true);
+    } else if (e.key === "Escape") { i.value = ""; closeCombo(i); i.blur(); }
+  });
+  // On desktop, keep focus in the box while clicking a suggestion; the click handler does the locking.
+  view.addEventListener("mousedown", (e) => { if (e.target.closest(".combo-list")) e.preventDefault(); });
   // Picker clicks re-render in place, without the page-enter animation or a jump to the top.
   function rerender() { const y = window.scrollY; route(true); window.scrollTo(0, y); }
 

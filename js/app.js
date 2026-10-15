@@ -4,7 +4,7 @@
   const view = document.getElementById("view");
   // We mostly play these two; they lead every list and are the default filter.
   const FOCUS = ["brawlBall", "knockout"];
-  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers" };
+  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers", locks: {}, lockMap: null };
 
   // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -43,7 +43,7 @@
   const selectedPlayers = () => (state.squad?.players || []).filter((p) => state.selected.includes(p.tag));
   const liveSlot = (m) => (state.rotation || []).find((r) => r.map === m.map && r.mode === m.mode && apiTime(r.end) > Date.now());
   const model = (key) => E.mapModel(state.meta, key, state.totals);
-  const recommend = (md, players, limit) => E.recommend(md, players, { minPower: state.minPower, limit, now: Date.now() });
+  const recommend = (md, players, limit, locked) => E.recommend(md, players, { minPower: state.minPower, limit, locked, now: Date.now() });
 
   // ---------- squad picker ----------
   function picker(compact) {
@@ -171,13 +171,17 @@
     const m = md.info;
     const players = selectedPlayers();
     const best = md.topBrawlers(1, 10)[0];
+    // Picks already made in the lobby. They belong to one game, so they reset when you open another map.
+    if (state.lockMap !== key) { state.locks = {}; state.lockMap = key; }
+    const locked = players.map((p) => state.locks[p.tag] ?? null);
 
     let comps;
     if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
-      const recs = recommend(md, players, players.length === 1 ? 8 : 6);
-      comps = recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>` : `<p class="note">Nobody picked owns a brawler at power ${state.minPower}+.</p>`;
+      const recs = recommend(md, players, players.length === 1 ? 8 : 6, locked);
+      comps = (players.length > 1 ? lockRow(players, locked) : "") +
+        (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>` : `<p class="note">Nobody picked owns a brawler at power ${state.minPower}+.</p>`);
     }
 
     view.innerHTML = `
@@ -222,11 +226,33 @@
     });
   }
 
+  // "Already picked" row: lock what people have chosen in the lobby, and the list fills the open spots.
+  function lockRow(players, locked) {
+    const open = players.filter((_, i) => locked[i] == null);
+    const done = players.length - open.length;
+    const head = !done ? "Already picked in the lobby? Lock it in, or tap a brawler below."
+      : !open.length ? "Everyone's locked in. This is how your comp rates."
+      : `Best ${open.length === 1 ? "pick" : "picks"} for ${open.map((p) => esc(p.name)).join(" and ")} with ${done === 1 ? "that pick" : "those picks"} locked in.`;
+    return `<div class="card locks">
+      <div class="locks-head"><span class="label">Already picked</span>${done ? `<button type="button" class="link" data-unlock-all>Clear</button>` : ""}</div>
+      <div class="lock-grid" style="--n:${players.length}">${players.map((p, i) => {
+        const taken = new Set(locked.filter((x, j) => x != null && j !== i));
+        const opts = p.brawlers.slice().sort((a, b) => bName(a.id).localeCompare(bName(b.id)))
+          .map((b) => `<option value="${b.id}"${locked[i] === b.id ? " selected" : ""}${taken.has(b.id) ? " disabled" : ""}>${esc(bName(b.id))}</option>`).join("");
+        return `<label class="lock${locked[i] != null ? " on" : ""}"><span class="who">${esc(p.name)}</span>
+          <select data-lock="${esc(p.tag)}"><option value="">Still picking</option>${opts}</select></label>`;
+      }).join("")}</div>
+      <p class="locks-note">${head}</p>
+    </div>`;
+  }
+
   function compRow(r, players, i) {
     const seen = r.comp.trio ? ` · ${fmt(r.comp.trio.games)} games seen` : "";
+    // With two or more people on, each brawler is a button that locks it in for that person.
+    const slot = (p, j) => players.length === 1 ? `<div class="slot">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></div>` : `<button type="button" class="slot${p.locked ? " locked" : ""}" data-pick="${esc(players[j].tag)}" data-id="${p.id}" title="${p.locked ? "Unlock" : "Lock in"} ${esc(bName(p.id))} for ${esc(players[j].name)}">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}${p.locked ? ' · <span class="picked">Picked</span>' : ""}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></button>`;
     return `<article class="card comp${i === 0 ? " top" : ""}">
       <span class="rank">${String(i + 1).padStart(2, "0")}</span>
-      <div class="slots" style="--n:${players.length}">${r.picks.map((p, j) => `<div class="slot">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></div>`).join("")}</div>
+      <div class="slots" style="--n:${players.length}">${r.picks.map(slot).join("")}</div>
       <div class="score">${i === 0 ? '<span class="top-badge">Top pick</span>' : ""}<div class="pct-big">${pct(r.comp.p)}</div><div class="pct-cap">top players${seen}</div></div>
     </article>`;
   }
@@ -349,7 +375,27 @@
       return;
     }
     const pw = e.target.closest("[data-power]");
-    if (pw) { state.minPower = +pw.dataset.power; store.set("minPower", state.minPower); rerender(); }
+    if (pw) { state.minPower = +pw.dataset.power; store.set("minPower", state.minPower); rerender(); return; }
+    // Tapping a brawler in a comp locks it in for that player (or unlocks it). Only with 2+ people on.
+    const s = e.target.closest("[data-pick]");
+    if (s && selectedPlayers().length > 1) {
+      const tag = s.dataset.pick, id = +s.dataset.id;
+      if (state.locks[tag] === id) delete state.locks[tag];
+      else {
+        for (const t of Object.keys(state.locks)) if (state.locks[t] === id) delete state.locks[t];
+        state.locks[tag] = id;
+      }
+      rerender();
+      return;
+    }
+    if (e.target.closest("[data-unlock-all]")) { state.locks = {}; rerender(); }
+  });
+  view.addEventListener("change", (e) => {
+    const sel = e.target.closest("[data-lock]");
+    if (!sel) return;
+    if (sel.value) state.locks[sel.dataset.lock] = +sel.value;
+    else delete state.locks[sel.dataset.lock];
+    rerender();
   });
   // Picker clicks re-render in place, without the page-enter animation or a jump to the top.
   function rerender() { const y = window.scrollY; route(true); window.scrollTo(0, y); }

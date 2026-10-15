@@ -96,7 +96,7 @@ Everything is on the log-odds scale so effects add up.
   - power below 11 (`POWER_STEP = 0.06` per level)
   - **These are not fitted.** They encode Andy's priority order.
 - **`PERSONAL_WEIGHT = 0.3`:** personal fit is multiplied by this before it's added to the meta, in both `recommend()` and the squad page's best-brawler lists. At 1.0 (before 2026-10-15), mains with 85%+ records at lower trophies outweighed the meta, and a 63% comp could outrank a 70% one. On the Oct 14 data, top picks averaged 57.3% at 1.0 and 62.8% at 0.3, while 77% of top picks still put people on a brawler they'd played 10+ times recently (78% before). At 0 it ignores mains almost entirely (2%). Changing it doesn't affect the calibrated %, so no player-split re-check is needed, just a look at a few maps.
-- **`recommend()`:** ranks by meta score plus `PERSONAL_WEIGHT` × personal fit, with no repeated trios and no person on the same brawler in more than 2 suggestions. The **% shown** is the meta-only comp estimate, the calibrated part, not the ranking score.
+- **`recommend()`:** ranks by meta score plus `PERSONAL_WEIGHT` × personal fit, with no repeated trios and no person on the same brawler in more than 2 suggestions. `opts.locked[i]` pins player i to a brawler already picked in the lobby; only the open players are searched (with a deeper pool of 40), and locked picks are exempt from the 2-suggestion limit. The **% shown** is the meta-only comp estimate, the calibrated part, not the ranking score.
 
 ### Sampling bias (the most important thing in the pipeline)
 
@@ -132,3 +132,4 @@ node scripts/check-model.cjs . /tmp/battles.json player
 5. Briefly kept private (no GitHub Pro, so no Pages for a private repo). Andy then chose a public repo with Pages.
 6. Redesigned to match the poker site's polish.
 7. Oct 15: Andy asked for the general win rate to count more. Added `PERSONAL_WEIGHT = 0.3`, so the meta now leads and personal fit nudges.
+8. Oct 15: "Already picked" on map pages. With 2+ people on, lock what someone picked in the lobby (dropdown, or tap a brawler in a comp) and the list shows the best picks for whoever's left. Locks are in memory only and reset when you open another map.

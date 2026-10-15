@@ -2,6 +2,8 @@
 
 Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 only; 5v5 is left out). Pick who's playing, open a map, and it ranks trios where each person plays a brawler they own: mostly by win rates from top players' battles on that map, nudged toward what each of us is good on (recent games, then highest trophies).
 
+If some of you have already picked in the lobby, lock those picks in (from the "Already picked" row or by tapping a brawler in a comp) and it shows the best pick for whoever's left.
+
 **Live site:** https://andyqueyl.github.io/brawl-comps/
 
 Maintainers (human or AI): read [`CLAUDE.md`](CLAUDE.md) first. It covers the refresh schedule, the weekly checklist and the pitfalls.

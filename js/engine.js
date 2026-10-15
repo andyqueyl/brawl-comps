@@ -168,20 +168,26 @@
   }
 
   // Best comps for the selected squad members on one map. Each member plays a different brawler they own.
+  // opts.locked[i] = a brawler id player i has already picked in game; only the others' picks are searched.
   function recommend(model, players, opts = {}) {
     const minPower = opts.minPower ?? 1;
     const limit = opts.limit ?? 6;
     const pw = opts.personalWeight ?? PERSONAL_WEIGHT;
-    const pools = players.map((pl) =>
-      pl.brawlers
-        .filter((b) => b.power >= minPower)
-        .map((b) => {
-          const meta = model.brawler(b.id);
-          const pers = personal(pl, b.id, { mode: model.info.mode, now: opts.now });
-          return { id: b.id, meta, pers, solo: meta.L + pw * pers.L };
-        })
-        .sort((a, b) => b.solo - a.solo)
-        .slice(0, players.length === 1 ? 30 : players.length > 3 ? 9 : CANDIDATES)
+    const locked = opts.locked || [];
+    const candidate = (pl, id, isLocked = false) => {
+      const meta = model.brawler(id);
+      const pers = personal(pl, id, { mode: model.info.mode, now: opts.now });
+      return { id: +id, meta, pers, solo: meta.L + pw * pers.L, locked: isLocked };
+    };
+    const pools = players.map((pl, i) =>
+      locked[i] != null && pl.brawlers.some((b) => b.id === +locked[i])
+        ? [candidate(pl, locked[i], true)]
+        : pl.brawlers
+            .filter((b) => b.power >= minPower && !locked.includes(b.id))
+            .map((b) => candidate(pl, b.id))
+            .sort((a, b) => b.solo - a.solo)
+            // With picks locked there are fewer combinations, so each open player can afford a deeper pool.
+            .slice(0, players.length === 1 ? 30 : players.length > 3 ? 9 : locked.some((x) => x != null) ? 40 : CANDIDATES)
     );
 
     if (players.length === 1) {
@@ -214,7 +220,7 @@
     const out = [];
     for (const r of results) {
       const k = trioKey(r.picks.map((p) => p.id));
-      if (seen.has(k) || r.picks.some((p, i) => (uses[i + ":" + p.id] || 0) >= 2)) continue;
+      if (seen.has(k) || r.picks.some((p, i) => !p.locked && (uses[i + ":" + p.id] || 0) >= 2)) continue;
       seen.add(k);
       r.picks.forEach((p, i) => (uses[i + ":" + p.id] = (uses[i + ":" + p.id] || 0) + 1));
       out.push(r);

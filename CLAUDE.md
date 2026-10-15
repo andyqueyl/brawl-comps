@@ -8,13 +8,13 @@ Read this before changing anything. `README.md` is the public description; this 
 
 ## What it does
 
-A static site that suggests Brawl Stars 3v3 comps for a fixed squad. You pick who's on, open a map, and it ranks trios where each person plays a brawler they own. The ranking puts **what each person is good on** first and the **top-player meta** second.
+A static site that suggests Brawl Stars 3v3 comps for a fixed squad. You pick who's on, open a map, and it ranks trios where each person plays a brawler they own. The ranking is driven mostly by the **top-player meta**, with **what each person is good on** as a smaller nudge (`PERSONAL_WEIGHT = 0.3`).
 
 ## The owner's requirements (don't drift from these)
 
 - **Brawl Ball and Knockout come first.** They lead every list and are the default filter. Other 3v3 modes stay available but secondary.
 - **No 5v5.** The parser drops any battle whose teams aren't exactly 3 players (`teamBattle` in `scripts/update.mjs`), and the site also strips 5v5 maps on load.
-- **Rank by what the squad is good at:** recent games first, then highest trophies, then the meta. Those weights are judgment calls that follow his priority order (see Model). Don't present them as fitted.
+- **Meta first, then what the squad is good at.** Changed 2026-10-15 at Andy's request ("factor in the general win rate more"); before that, personal fit led. Within personal fit: recent games, then highest trophies. All of these weights are judgment calls (see Model). Don't present them as fitted.
 - **Display names:** Andy (#2Y2GPLL88), Nova (#28900QP9Y, in-game Glowstar), DLB (#2PYQL2ULQ), Anthony (#28R8GC0C9, in-game CodyMenace$$$). Edit names and tags only in `squad.config.json`.
 - **Look:** a sibling of his other site, `~/Desktop/Coding Projects/poker-solver-lab`: condensed uppercase display, mono labels, thin-ruled cards. Its own identity: Big Shoulders Display / Instrument Sans / JetBrains Mono, violet-tinted neutrals, Brawl gold (`--accent`), Brawl Ball blue (`--ball`), Knockout orange (`--ko`). Every color is a token in `css/style.css`, with light and dark themes. Keep it that way.
 - **Be blunt about limits.** He relays conclusions to others. The strongest finding is that picks barely matter compared with skill (see Validation). Never oversell the % numbers.
@@ -95,7 +95,8 @@ Everything is on the log-odds scale so effects add up.
   - highest-trophy percentile among the person's own brawlers (±`TROPHY_WEIGHT = 0.4`)
   - power below 11 (`POWER_STEP = 0.06` per level)
   - **These are not fitted.** They encode Andy's priority order.
-- **`recommend()`:** ranks by meta score plus personal fit, with no repeated trios and no person on the same brawler in more than 2 suggestions. The **% shown** is the meta-only comp estimate, the calibrated part, not the ranking score.
+- **`PERSONAL_WEIGHT = 0.3`:** personal fit is multiplied by this before it's added to the meta, in both `recommend()` and the squad page's best-brawler lists. At 1.0 (before 2026-10-15), mains with 85%+ records at lower trophies outweighed the meta, and a 63% comp could outrank a 70% one. On the Oct 14 data, top picks averaged 57.3% at 1.0 and 62.8% at 0.3, while 77% of top picks still put people on a brawler they'd played 10+ times recently (78% before). At 0 it ignores mains almost entirely (2%). Changing it doesn't affect the calibrated %, so no player-split re-check is needed, just a look at a few maps.
+- **`recommend()`:** ranks by meta score plus `PERSONAL_WEIGHT` × personal fit, with no repeated trios and no person on the same brawler in more than 2 suggestions. The **% shown** is the meta-only comp estimate, the calibrated part, not the ranking score.
 
 ### Sampling bias (the most important thing in the pipeline)
 
@@ -122,7 +123,7 @@ node scripts/check-model.cjs . /tmp/battles.json player
 - Tell the user plainly what you didn't verify, for example a page you couldn't open in a browser.
 - Commit messages end with the Co-Authored-By line used in the existing history.
 
-## History (Oct 12–13, 2026)
+## History (Oct 12–15, 2026)
 
 1. Built the static site and pipeline. The engine was first tested against a mock API with planted strengths.
 2. First real pull exposed the top-player sampling bias; added `debias()` and calibration.
@@ -130,3 +131,4 @@ node scripts/check-model.cjs . /tmp/battles.json player
 4. Andy's asks: Brawl Ball and Knockout focus, no 5v5, rank by recent form then trophies, renamed players, daily squad refresh.
 5. Briefly kept private (no GitHub Pro, so no Pages for a private repo). Andy then chose a public repo with Pages.
 6. Redesigned to match the poker site's polish.
+7. Oct 15: Andy asked for the general win rate to count more. Added `PERSONAL_WEIGHT = 0.3`, so the meta now leads and personal fit nudges.

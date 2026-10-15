@@ -21,6 +21,10 @@
   const VOLUME_CAP = 0.5;
   const TROPHY_WEIGHT = 0.4;  // best brawler by highest trophies gets +0.4, worst gets -0.4
   const POWER_STEP = 0.06;    // log-odds lost per power level under 11
+  // How much "what we're good on" counts next to top players' win rates when ranking comps.
+  // Our own records come from lower-trophy games, where a main can win 85%+, so at full weight they
+  // swamped the meta and a 63% comp could outrank a 70% one. Judgment call (Oct 2026), not fitted.
+  const PERSONAL_WEIGHT = 0.3;
   const CANDIDATES = 14;     // best brawlers per player considered when building comps
   // Summed team scores ran about 20% too confident when predicting battles of players held out of
   // the data (Oct 2026), because part of a brawler's record is the skill of the top players who main it.
@@ -167,13 +171,14 @@
   function recommend(model, players, opts = {}) {
     const minPower = opts.minPower ?? 1;
     const limit = opts.limit ?? 6;
+    const pw = opts.personalWeight ?? PERSONAL_WEIGHT;
     const pools = players.map((pl) =>
       pl.brawlers
         .filter((b) => b.power >= minPower)
         .map((b) => {
           const meta = model.brawler(b.id);
           const pers = personal(pl, b.id, { mode: model.info.mode, now: opts.now });
-          return { id: b.id, meta, pers, solo: meta.L + pers.L };
+          return { id: b.id, meta, pers, solo: meta.L + pw * pers.L };
         })
         .sort((a, b) => b.solo - a.solo)
         .slice(0, players.length === 1 ? 30 : players.length > 3 ? 9 : CANDIDATES)
@@ -188,7 +193,7 @@
       if (i === pools.length) {
         const ids = chosen.map((c) => c.id);
         const comp = model.team(ids);
-        const pers = chosen.reduce((s, c) => s + c.pers.L, 0);
+        const pers = pw * chosen.reduce((s, c) => s + c.pers.L, 0);
         results.push({ picks: chosen.slice(), score: comp.L + pers, comp });
         return;
       }
@@ -218,7 +223,7 @@
     return out;
   }
 
-  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend };
+  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend, PERSONAL_WEIGHT };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else globalThis.BrawlEngine = api;
 })();

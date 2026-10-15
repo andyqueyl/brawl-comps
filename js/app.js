@@ -69,7 +69,7 @@
         <div>
           <span class="eyebrow">Squad comps · Brawl Ball + Knockout · 3v3</span>
           <h1>Brawl<br><em>Comps</em></h1>
-          <p class="lede">Pick who's on, and every map shows the best trio <b>built from the brawlers you're actually good on</b>: recent games first, then trophies, then what wins for top players.</p>
+          <p class="lede">Pick who's on, and every map shows the best trio <b>built from the brawlers you own</b>: ranked mostly by what wins for top players, with a nudge toward what each of you is good on.</p>
         </div>
         ${picker(false)}
       </section>
@@ -197,7 +197,7 @@
 
       <section class="section">
         <div class="section-head"><div><span class="eyebrow">Ranked for your squad</span><h2>Your comps</h2>
-          <p>What each of you is good on comes first (recent games, then highest trophies), then the meta. The % is how that comp does for top players on this map.</p></div></div>
+          <p>Ranked mostly by how each comp does for top players on this map (the %), then nudged toward what each of you is good on (recent games, then highest trophies).</p></div></div>
         ${picker(true)}
         <div style="height:12px"></div>
         ${comps}
@@ -266,7 +266,7 @@
         .map((b) => {
           const pers = E.personal(p, b.id, { mode, now });
           const L = ms.reduce((s, md) => s + md.brawler(b.id).L * md.info.battles, 0) / w;
-          return { id: b.id, pers, s: L + pers.L };
+          return { id: b.id, pers, s: L + E.PERSONAL_WEIGHT * pers.L };
         })
         .sort((a, b) => b.s - a.s)
         .slice(0, n);
@@ -274,7 +274,7 @@
 
     view.innerHTML = `
       <div class="section-head"><div><span class="eyebrow">${players.length} players · brawlers as of ${esc(shortDate(state.squad.updated))}</span><h2 style="font-size:clamp(48px,9vw,88px)">Squad</h2>
-        <p>Best picks weigh what each of you has been playing and winning with lately, then your highest trophies, then the meta for that mode.</p></div></div>
+        <p>Best picks lean on the meta for that mode, nudged toward what each of you has been playing and winning with lately, then your highest trophies.</p></div></div>
       <div class="profiles">${players.map((p) => {
         const games = p.games || [];
         const month = games.filter((g) => now - g[0] <= 30 * DAY);
@@ -309,7 +309,7 @@
     view.innerHTML = `<article class="prose">
       <span class="eyebrow">How the picks are made</span>
       <h1>Method</h1>
-      <p>Two things go into every comp: what each of us has been good on, and how brawlers do on that map for top players.</p>
+      <p>Two things go into every comp: how brawlers do on that map for top players, which counts most, and what each of us has been good on.</p>
       <div class="facts">
         <div><span class="label">Battles, last pull</span><b>${fmt(s.battles || 0)}</b></div>
         <div><span class="label">Top players sampled</span><b>${fmt(s.players || 0)}</b></div>
@@ -321,7 +321,7 @@
         <li><b>Recent games count most:</b> your record on a brawler and how much you've been playing it. A game three weeks old counts half as much as one today, and games in other modes count half.</li>
         <li><b>Then highest trophies:</b> your best brawler by highest trophies gets a boost, your lowest a penalty.</li>
         <li>Every power level under 11 costs a little.</li>
-        <li>These weights follow that order of priority. There aren't enough of our games yet to fit them from data.</li>
+        <li>All of this together counts at 0.3 times the meta's weight. Our own records come from lower-trophy games, where a main can win 85% or more, so at full weight they buried the meta. These weights are judgment calls; there aren't enough of our games yet to fit them from data.</li>
       </ul>
       <h2>The meta</h2>
       <p>Every Monday the official Brawl Stars API gives the last 25 battles of about ${fmt(s.players || 3000)} top-ranked players. Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last week's counts stay in at half weight so smaller maps keep a sample.</p>

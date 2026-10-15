@@ -66,7 +66,7 @@ Removing someone leaves their history in `data/squad-history.json`. That's harml
 
 ## 5. After changing engine constants or the pipeline
 
-Re-validate with a **player split** (never a random split; see CLAUDE.md):
+`PERSONAL_WEIGHT` and the other personal-fit constants only change the ranking, not the % shown, so they need no re-validation: just compare the top comps on a few Brawl Ball and Knockout maps before and after. For meta-model constants (`K_PAIR`, `K_TRIO`, `TEAM_SCALE`, `fitK`) or pipeline changes, re-validate with a **player split** (never a random split; see CLAUDE.md):
 
 ```sh
 DUMP_ONLY=1 DUMP_BATTLES=/tmp/battles.json node --env-file=.env scripts/update.mjs
@@ -77,7 +77,7 @@ Look for `best a` near 1.00 on the "with pairs/trios" line. Then update the numb
 
 ## Ground rules
 
-- Keep the owner's requirements: Brawl Ball + Knockout first, no 5v5, recent form then trophies then meta.
+- Keep the owner's requirements: Brawl Ball + Knockout first, no 5v5, meta first with personal fit (recent form, then trophies) as a nudge at `PERSONAL_WEIGHT = 0.3`.
 - Don't oversell the percentages. Picks move win odds a few points; skill decides games.
 - Don't commit `.env`, mock data or analysis dumps.
 - End commit messages with the Co-Authored-By line used in the history.

@@ -1,6 +1,6 @@
 # Brawl Comps
 
-Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 only; 5v5 is left out). Pick who's playing, open a map, and it ranks trios where each person plays a brawler they own: what each of us is good on comes first (recent games, then highest trophies), then win rates from top players' battles on that map.
+Best Brawl Stars comps for our squad, focused on Brawl Ball and Knockout (3v3 only; 5v5 is left out). Pick who's playing, open a map, and it ranks trios where each person plays a brawler they own: mostly by win rates from top players' battles on that map, nudged toward what each of us is good on (recent games, then highest trophies).
 
 **Live site:** https://andyqueyl.github.io/brawl-comps/
 
@@ -16,7 +16,7 @@ This is a static site (plain HTML and JavaScript). A GitHub Action refreshes squ
 - Unless a comp says "games seen", that exact trio wasn't played enough to measure directly.
 - Balance changes show up the next Monday, and the first week after a patch mixes old and new data.
 - The API only returns each player's last 25 battles. Squad games are pulled daily, so only a day with more than 25 games loses some.
-- How much recent form and trophies count is a judgment call, not fitted; there aren't enough squad games to test it.
+- How much recent form and trophies count, and how much they count next to the meta (0.3×), is a judgment call, not fitted; there aren't enough squad games to test it.
 - The "Live" badge is the map rotation at update time; maps rotate daily, so it goes stale during the week.
 
 ## How the data is built

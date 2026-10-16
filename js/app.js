@@ -4,7 +4,7 @@
   const view = document.getElementById("view");
   // We mostly play these two; they lead every list and are the default filter.
   const FOCUS = ["brawlBall", "knockout"];
-  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers", locks: {}, lockMap: null };
+  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers", locks: {}, lockMap: null, excluded: {} };
 
   // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -43,7 +43,7 @@
   const selectedPlayers = () => (state.squad?.players || []).filter((p) => state.selected.includes(p.tag));
   const liveSlot = (m) => (state.rotation || []).find((r) => r.map === m.map && r.mode === m.mode && apiTime(r.end) > Date.now());
   const model = (key) => E.mapModel(state.meta, key, state.totals);
-  const recommend = (md, players, limit, locked) => E.recommend(md, players, { minPower: state.minPower, limit, locked, now: Date.now() });
+  const recommend = (md, players, limit, locked, excluded) => E.recommend(md, players, { minPower: state.minPower, limit, locked, excluded, now: Date.now() });
 
   // ---------- squad picker ----------
   function picker(compact) {
@@ -174,14 +174,17 @@
     // Picks already made in the lobby. They belong to one game, so they reset when you open another map.
     if (state.lockMap !== key) { state.locks = {}; state.lockMap = key; }
     const locked = players.map((p) => state.locks[p.tag] ?? null);
+    const excluded = players.map((p) => state.excluded[p.tag] || []);
 
     let comps;
     if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
-      const recs = recommend(md, players, players.length === 1 ? 8 : 6, locked);
-      comps = (players.length > 1 ? lockRow(players, locked, md) : "") +
-        (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>` : `<p class="note">Nobody picked owns a brawler at power ${state.minPower}+.</p>`);
+      const recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded);
+      comboOpts = {};
+      comps = (players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
+        (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>`
+          : `<p class="note">${excluded.some((x) => x.length) ? `No brawlers left at power ${state.minPower}+ once the left-out ones are removed.` : `Nobody picked owns a brawler at power ${state.minPower}+.`}</p>`);
     }
 
     view.innerHTML = `
@@ -229,15 +232,22 @@
   // "Already picked" row: lock what people have chosen in the lobby, and the list fills the open spots.
   // Each open player gets a type-to-search box. Before you type it lists that player's best brawlers
   // for this map; as you type it narrows by name, names that start with what you typed first.
-  let lockOpts = {};
+  let comboOpts = {};
+  // A person's brawlers for a search box, best for this map first (same score as the comps).
+  function ranked(p, md, keep) {
+    const now = Date.now();
+    return p.brawlers.filter(keep).map((b) => {
+      const meta = md.brawler(b.id);
+      const pers = E.personal(p, b.id, { mode: md.info.mode, now });
+      return { id: b.id, name: bName(b.id), lower: bName(b.id).toLowerCase(), power: b.power, p: meta.p, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
+    }).sort((a, b) => b.fit - a.fit);
+  }
   function lockRow(players, locked, md) {
     const open = players.filter((_, i) => locked[i] == null);
     const done = players.length - open.length;
     const head = !done ? "Someone already picked in the lobby? Type their brawler, or tap one in a comp below."
       : !open.length ? "Everyone's locked in. This is how your comp rates."
       : `Showing the best ${open.length === 1 ? "pick" : "picks"} for ${open.map((p) => esc(p.name)).join(" and ")}.`;
-    lockOpts = {};
-    const now = Date.now();
     return `<div class="card locks">
       <div class="locks-head"><span class="label">Already picked</span>${done ? `<button type="button" class="link" data-unlock-all>Clear all</button>` : ""}</div>
       <div class="lock-grid" style="--n:${players.length}">${players.map((p, i) => {
@@ -247,11 +257,7 @@
             <div class="chosen">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-unlock="${esc(p.tag)}" aria-label="Unlock ${esc(bName(id))} for ${esc(p.name)}">×</button></div></div>`;
         }
         const taken = new Set(locked.filter((x) => x != null));
-        lockOpts[p.tag] = p.brawlers.filter((b) => !taken.has(b.id)).map((b) => {
-          const meta = md.brawler(b.id);
-          const pers = E.personal(p, b.id, { mode: md.info.mode, now });
-          return { id: b.id, name: bName(b.id), lower: bName(b.id).toLowerCase(), power: b.power, p: meta.p, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
-        }).sort((a, b) => b.fit - a.fit);
+        comboOpts["lock:" + p.tag] = ranked(p, md, (b) => !taken.has(b.id));
         return `<div class="lock"><label class="who" for="lk-${i}">${esc(p.name)}</label>
           <div class="combo"><input id="lk-${i}" data-lock-input="${esc(p.tag)}" type="text" placeholder="Type a brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lk-list-${i}"><ul class="combo-list" id="lk-list-${i}" role="listbox" hidden></ul></div></div>`;
@@ -260,8 +266,32 @@
     </div>`;
   }
 
-  function comboMatches(tag, q) {
-    const all = lockOpts[tag] || [];
+  // "Don't suggest" row: brawlers someone won't play. Unlike locks these are a standing preference,
+  // so they're saved on the device and apply on every map until removed.
+  function banRow(players, locked, md) {
+    const any = players.some((p) => (state.excluded[p.tag] || []).length);
+    return `<div class="card locks bans">
+      <div class="locks-head"><span class="label">Don't suggest</span>${any ? `<button type="button" class="link" data-unban-all>Clear all</button>` : ""}</div>
+      <div class="lock-grid" style="--n:${players.length}">${players.map((p, i) => {
+        const ex = state.excluded[p.tag] || [];
+        comboOpts["ban:" + p.tag] = ranked(p, md, (b) => !ex.includes(b.id) && b.id !== locked[i]);
+        return `<div class="lock"><label class="who" for="bn-${i}">${esc(p.name)}</label>
+          ${ex.length ? `<div class="ban-chips">${ex.map((id) => `<span class="ban-chip">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-unban="${esc(p.tag)}" data-id="${id}" aria-label="Suggest ${esc(bName(id))} for ${esc(p.name)} again">×</button></span>`).join("")}</div>` : ""}
+          <div class="combo"><input id="bn-${i}" data-ban-input="${esc(p.tag)}" type="text" placeholder="Leave out a brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
+            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="bn-list-${i}"><ul class="combo-list" id="bn-list-${i}" role="listbox" hidden></ul></div></div>`;
+      }).join("")}</div>
+      <p class="locks-note">${any ? "Left out on every map, saved on this device until you remove them." : "Someone won't play a brawler? Type it and it's left out of their suggestions on every map."}</p>
+    </div>`;
+  }
+
+  const COMBO = "[data-lock-input],[data-ban-input]";
+  const comboKey = (input) => input.dataset.lockInput != null ? "lock:" + input.dataset.lockInput : "ban:" + input.dataset.banInput;
+  function comboPick(input, o, fromKeyboard) {
+    if (input.dataset.lockInput != null) lockIn(input.dataset.lockInput, o.id, fromKeyboard);
+    else banIn(input.dataset.banInput, o.id, fromKeyboard);
+  }
+  function comboMatches(key, q) {
+    const all = comboOpts[key] || [];
     q = q.trim().toLowerCase();
     if (!q) return all.slice(0, 6);
     const starts = all.filter((o) => o.lower.startsWith(q)), rest = all.filter((o) => !o.lower.startsWith(q) && o.lower.includes(q));
@@ -270,7 +300,7 @@
   function drawCombo(input, active = 0) {
     const list = input.nextElementSibling;
     const q = input.value;
-    const items = comboMatches(input.dataset.lockInput, q);
+    const items = comboMatches(comboKey(input), q);
     input._items = items;
     input._active = Math.min(active, items.length - 1);
     list.innerHTML = (!q.trim() && items.length ? `<li class="combo-head" role="presentation">Best for this map</li>` : "") +
@@ -291,6 +321,13 @@
     rerender();
     // Typing flow: jump straight to the next person who hasn't picked.
     if (fromKeyboard) view.querySelector("[data-lock-input]")?.focus();
+  }
+  function banIn(tag, id, fromKeyboard) {
+    state.excluded[tag] = [...(state.excluded[tag] || []).filter((x) => x !== id), id];
+    store.set("excluded", state.excluded);
+    rerender();
+    // Stay in the same box so several can be left out in a row.
+    if (fromKeyboard) view.querySelector(`[data-ban-input="${CSS.escape(tag)}"]`)?.focus();
   }
 
   function compRow(r, players, i) {
@@ -335,7 +372,7 @@
       const ms = models.filter((md) => md.info.mode === mode);
       const w = ms.reduce((s, md) => s + md.info.battles, 0) || 1;
       return p.brawlers
-        .filter((b) => b.power >= state.minPower)
+        .filter((b) => b.power >= state.minPower && !(state.excluded[p.tag] || []).includes(b.id))
         .map((b) => {
           const pers = E.personal(p, b.id, { mode, now });
           const L = ms.reduce((s, md) => s + md.brawler(b.id).L * md.info.battles, 0) / w;
@@ -367,6 +404,7 @@
             <div class="kpi"><span class="label">Power 11</span><b>${p.brawlers.filter((b) => b.power >= 11).length}<span class="muted" style="font-size:15px">/${p.brawlers.length}</span></b></div>
           </div>
           ${FOCUS.map((mode) => `<div class="picks"><h3>${modeIcon(mode)}Best in ${esc(modeInfo(mode).name)}</h3><div class="pick-list">${bestFor(p, mode, 5).map((x) => `<div class="pick">${bImg(x.id)}<span>${esc(bName(x.id))}</span><small>${x.pers.recentGames ? record(x.pers) : `#${trophyRank(p, x.id)} trophies`}</small></div>`).join("")}</div></div>`).join("")}
+          ${(state.excluded[p.tag] || []).length ? `<p class="muted" style="font-size:13px;margin:0">Left out of suggestions: ${state.excluded[p.tag].map((id) => esc(bName(id))).join(", ")}. Change this under "Don't suggest" on any map.</p>` : ""}
           <div class="two">
             <div class="mini-table"><h4>Most played · 30 days</h4>${mostPlayed.length ? `<table><tbody>${mostPlayed.map(([id, [g, w]]) => `<tr><td><span class="bcell">${bImg(+id)}${esc(bName(+id))}</span></td><td class="num">${w}-${g - w}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">No tracked games yet.</p>`}</div>
             <div class="mini-table"><h4>Highest trophies</h4><table><tbody>${topTrophies.map((b) => `<tr><td><span class="bcell">${bImg(b.id)}${esc(bName(b.id))}</span></td><td class="num">${fmt(b.highest || 0)}</td></tr>`).join("")}</tbody></table></div>
@@ -425,9 +463,9 @@
     if (pw) { state.minPower = +pw.dataset.power; store.set("minPower", state.minPower); rerender(); return; }
     const li = e.target.closest(".combo-list [data-k]");
     if (li) {
-      const i = li.closest(".combo").querySelector("[data-lock-input]");
+      const i = li.closest(".combo").querySelector(COMBO);
       const o = i._items?.[+li.dataset.k];
-      if (o) lockIn(i.dataset.lockInput, o.id, false);
+      if (o) comboPick(i, o, false);
       return;
     }
     // Tapping a brawler in a comp locks it in for that player (or unlocks it). Only with 2+ people on.
@@ -444,18 +482,33 @@
     }
     const un = e.target.closest("[data-unlock]");
     if (un) { const tag = un.dataset.unlock; delete state.locks[tag]; rerender(); view.querySelector(`[data-lock-input="${CSS.escape(tag)}"]`)?.focus(); return; }
-    if (e.target.closest("[data-unlock-all]")) { state.locks = {}; rerender(); }
+    if (e.target.closest("[data-unlock-all]")) { state.locks = {}; rerender(); return; }
+    const ub = e.target.closest("[data-unban]");
+    if (ub) {
+      const tag = ub.dataset.unban;
+      state.excluded[tag] = (state.excluded[tag] || []).filter((x) => x !== +ub.dataset.id);
+      if (!state.excluded[tag].length) delete state.excluded[tag];
+      store.set("excluded", state.excluded);
+      rerender();
+      view.querySelector(`[data-ban-input="${CSS.escape(tag)}"]`)?.focus();
+      return;
+    }
+    if (e.target.closest("[data-unban-all]")) {
+      for (const p of selectedPlayers()) delete state.excluded[p.tag];
+      store.set("excluded", state.excluded);
+      rerender();
+    }
   });
-  // Type-to-search boxes in the "Already picked" row.
-  view.addEventListener("focusin", (e) => { const i = e.target.closest("[data-lock-input]"); if (i) drawCombo(i); });
-  view.addEventListener("input", (e) => { const i = e.target.closest("[data-lock-input]"); if (i) drawCombo(i); });
+  // Type-to-search boxes in the "Already picked" and "Don't suggest" rows.
+  view.addEventListener("focusin", (e) => { const i = e.target.closest(COMBO); if (i) drawCombo(i); });
+  view.addEventListener("input", (e) => { const i = e.target.closest(COMBO); if (i) drawCombo(i); });
   view.addEventListener("focusout", (e) => {
-    const i = e.target.closest("[data-lock-input]");
+    const i = e.target.closest(COMBO);
     // A short delay lets a tap on a suggestion register before the list closes (phones blur first).
     if (i) setTimeout(() => { if (document.activeElement !== i && i.isConnected) closeCombo(i); }, 150);
   });
   view.addEventListener("keydown", (e) => {
-    const i = e.target.closest("[data-lock-input]");
+    const i = e.target.closest(COMBO);
     if (!i || !i._items) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -464,7 +517,7 @@
     } else if (e.key === "Enter") {
       e.preventDefault();
       const o = i._items[i._active];
-      if (o) lockIn(i.dataset.lockInput, o.id, true);
+      if (o) comboPick(i, o, true);
     } else if (e.key === "Escape") { i.value = ""; closeCombo(i); i.blur(); }
   });
   // On desktop, keep focus in the box while clicking a suggestion; the click handler does the locking.
@@ -507,6 +560,7 @@
     const tags = new Set(state.squad.players.map((p) => p.tag));
     state.selected = store.get("selected", []).filter((t) => tags.has(t)).slice(0, 4);
     state.minPower = store.get("minPower", 1);
+    state.excluded = store.get("excluded", {});
     state.filter = store.get("filter", "focus");
     document.getElementById("stamp").textContent = `Squad ${state.squad.updated ? shortDate(state.squad.updated) : "—"} · Meta ${shortDate(meta.updated)}`;
     document.getElementById("foot").innerHTML = `<span>Brawl Comps · data from the official Brawl Stars API · art from <a href="https://brawlify.com">Brawlify</a> · not affiliated with Supercell</span><span><a href="https://github.com/andyqueyl/brawl-comps">Source on GitHub</a></span>`;

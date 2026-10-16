@@ -169,11 +169,13 @@
 
   // Best comps for the selected squad members on one map. Each member plays a different brawler they own.
   // opts.locked[i] = a brawler id player i has already picked in game; only the others' picks are searched.
+  // opts.excluded[i] = brawler ids never to suggest for player i (a lock still wins over an exclusion).
   function recommend(model, players, opts = {}) {
     const minPower = opts.minPower ?? 1;
     const limit = opts.limit ?? 6;
     const pw = opts.personalWeight ?? PERSONAL_WEIGHT;
     const locked = opts.locked || [];
+    const excluded = opts.excluded || [];
     const candidate = (pl, id, isLocked = false) => {
       const meta = model.brawler(id);
       const pers = personal(pl, id, { mode: model.info.mode, now: opts.now });
@@ -183,7 +185,7 @@
       locked[i] != null && pl.brawlers.some((b) => b.id === +locked[i])
         ? [candidate(pl, locked[i], true)]
         : pl.brawlers
-            .filter((b) => b.power >= minPower && !locked.includes(b.id))
+            .filter((b) => b.power >= minPower && !locked.includes(b.id) && !(excluded[i] || []).includes(b.id))
             .map((b) => candidate(pl, b.id))
             .sort((a, b) => b.solo - a.solo)
             // With picks locked there are fewer combinations, so each open player can afford a deeper pool.

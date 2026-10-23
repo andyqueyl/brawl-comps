@@ -4,7 +4,7 @@
   const view = document.getElementById("view");
   // We mostly play these two; they lead every list and are the default filter.
   const FOCUS = ["brawlBall", "knockout"];
-  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers", locks: {}, lockMap: null, excluded: {}, ranked: null, rtotals: null, gone: [] };
+  const state = { game: null, meta: null, squad: null, rotation: null, totals: null, selected: [], minPower: 1, query: "", filter: "focus", metaTab: "brawlers", locks: {}, lockMap: null, excluded: {}, ranked: null, rtotals: null, draft: null };
 
   // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -45,7 +45,7 @@
   // rk: the Ranked-only numbers (data/ranked.json) instead of all top-player games.
   const model = (key, rk) => (rk ? E.mapModel(state.ranked, key, state.rtotals) : E.mapModel(state.meta, key, state.totals));
   const modeRank = (mode) => (FOCUS.includes(mode) ? FOCUS.indexOf(mode) : 9);
-  const recommend = (md, players, limit, locked, excluded) => E.recommend(md, players, { minPower: state.minPower, limit, locked, excluded, now: Date.now() });
+  const recommend = (md, players, limit, locked, excluded, more) => E.recommend(md, players, { minPower: state.minPower, limit, locked, excluded, now: Date.now(), ...more });
 
   // ---------- squad picker ----------
   function picker(compact) {
@@ -173,21 +173,26 @@
     const m = md.info;
     const players = selectedPlayers();
     const best = md.topBrawlers(1, 10)[0];
-    // Picks already made in the lobby (and in Ranked, what's banned or taken). They belong to one game,
-    // so they reset when you open another map.
+    // Picks already made in the lobby (and in a Ranked draft, bans and the other team's picks). They belong
+    // to one game, so they reset when you open another map.
     const lockKey = (rk ? "ranked:" : "") + key;
-    if (state.lockMap !== lockKey) { state.locks = {}; state.gone = []; state.lockMap = lockKey; }
+    if (state.lockMap !== lockKey) { state.locks = {}; state.draft = newDraft(); state.lockMap = lockKey; }
+    // Teammates outside the squad fill whatever slots the selected squad doesn't. Extra ones are kept
+    // (selection changes shouldn't lose them) but only the first that fit are used.
+    const d = (state.dv = { ...state.draft, allies: state.draft.allies.slice(0, allySlots(players)) });
     const locked = players.map((p) => state.locks[p.tag] ?? null);
-    const excluded = players.map((p) => [...(state.excluded[p.tag] || []), ...state.gone]);
+    const gone = rk ? draftGone(d) : [];
+    const excluded = players.map((p) => [...(state.excluded[p.tag] || []), ...gone]);
     comboOpts = {};
 
-    let comps;
+    let comps, recs = [];
     if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
-      const recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded);
-      comps = (players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
-        (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i)).join("")}</div>`
+      recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded, rk ? { enemies: d.theirs, allies: d.allies } : {});
+      // In a Ranked draft your own picks are entered in the drafter instead.
+      comps = (!rk && players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
+        (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i, rk && d.theirs.length ? "vs their picks" : "top players")).join("")}</div>`
           : `<p class="note">${excluded.some((x) => x.length) ? `No brawlers left at power ${state.minPower}+ once the left-out ones are removed.` : `Nobody picked owns a brawler at power ${state.minPower}+.`}</p>`);
     }
 
@@ -206,11 +211,11 @@
         </div>
       </header>
 
-      ${rk ? draftSection(md, players) : ""}
+      ${rk ? (players.length > 3 ? drafter(md, [], [], [], `${players.length} people are on, but it's 3v3: tap whoever's sitting out below to get picks for your squad. Until then this works as a drafter for any team.`) : drafter(md, players, locked, recs)) : ""}
 
       <section class="section">
         <div class="section-head"><div><span class="eyebrow">${rk ? "Draft · your picks" : "Ranked for your squad"}</span><h2>Your comps</h2>
-          <p>${rk ? "Ranked mostly by how each comp does in top players' Ranked games on this map (the %), then nudged toward what each of you is good on. Bans and the other team's picks entered above are left out; lock your own team's picks as they happen."
+          <p>${rk ? "Ranked mostly by your chance against what the other team has picked so far (the %, from top players' Ranked games here, counters included), then nudged toward what each of you is good on. Anything banned or taken in the drafter is left out."
             : "Ranked mostly by how each comp does for top players on this map (the %), then nudged toward what each of you is good on (recent games, then highest trophies)."}</p></div></div>
         ${picker(true)}
         <div style="height:12px"></div>
@@ -224,6 +229,7 @@
         <div class="card panel"><div class="table-wrap" id="metaBody"></div></div>
       </section>`;
 
+    if (rk && !inPlaceRender && matchMedia("(pointer: fine)").matches) view.querySelector('[data-draft-input="bans"]')?.focus({ preventScroll: true });
     const body = document.getElementById("metaBody");
     const drawMeta = () => { body.innerHTML = state.metaTab === "brawlers" ? brawlerTable(md) : teamTable(md, state.metaTab); };
     drawMeta();
@@ -241,30 +247,33 @@
   // for this map; as you type it narrows by name, names that start with what you typed first.
   let comboOpts = {};
   // A person's brawlers for a search box, best for this map first (same score as the comps).
-  function ranked(p, md, keep) {
+  // In a Ranked draft (dr = { ours, theirs }), the % and order are against what the other team has picked.
+  function ranked(p, md, keep, dr) {
     const now = Date.now();
     return p.brawlers.filter(keep).map((b) => {
-      const meta = md.brawler(b.id);
+      const meta = dr ? md.draft([...dr.ours, b.id], dr.theirs) : md.brawler(b.id);
       const pers = E.personal(p, b.id, { mode: md.info.mode, now });
-      return { id: b.id, name: bName(b.id), lower: bName(b.id).toLowerCase(), sub: `${pct(meta.p)} here · P${b.power}`, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
+      return { id: b.id, name: bName(b.id), ...nameKeys(bName(b.id)), sub: `${pct(meta.p)} ${dr?.theirs.length ? "vs them" : "here"} · P${b.power}`, p: meta.p, pers, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
     }).sort((a, b) => b.fit - a.fit);
   }
-  function lockRow(players, locked, md) {
+  function lockRow(players, locked, md, rk) {
     const open = players.filter((_, i) => locked[i] == null);
     const done = players.length - open.length;
-    const head = !done ? "Someone already picked in the lobby? Type their brawler, or tap one in a comp below."
+    const head = rk ? (!done ? "Lock each of your picks as you make them (type it, or tap one in a comp below)." : !open.length ? "All your picks are in." : `Still to pick: ${open.map((p) => esc(p.name)).join(", ")}.`)
+      : !done ? "Someone already picked in the lobby? Type their brawler, or tap one in a comp below."
       : !open.length ? "Everyone's locked in. This is how your comp rates."
       : `Showing the best ${open.length === 1 ? "pick" : "picks"} for ${open.map((p) => esc(p.name)).join(" and ")}.`;
     return `<div class="card locks">
-      <div class="locks-head"><span class="label">Already picked</span>${done ? `<button type="button" class="link" data-unlock-all>Clear all</button>` : ""}</div>
+      <div class="locks-head"><span class="label">${rk ? "Your squad's picks" : "Already picked"}</span>${done ? `<button type="button" class="link" data-unlock-all>Clear all</button>` : ""}</div>
       <div class="lock-grid" style="--n:${players.length}">${players.map((p, i) => {
         if (locked[i] != null) {
           const id = locked[i];
           return `<div class="lock on"><span class="who">${esc(p.name)}</span>
             <div class="chosen">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-unlock="${esc(p.tag)}" aria-label="Unlock ${esc(bName(id))} for ${esc(p.name)}">×</button></div></div>`;
         }
-        const taken = new Set([...locked.filter((x) => x != null), ...state.gone]);
-        comboOpts["lock:" + p.tag] = ranked(p, md, (b) => !taken.has(b.id));
+        const taken = new Set([...locked.filter((x) => x != null), ...(rk ? draftGone(state.dv) : [])]);
+        const dr = rk ? { ours: [...state.dv.allies, ...locked.filter((x) => x != null)], theirs: state.dv.theirs } : null;
+        comboOpts["lock:" + p.tag] = ranked(p, md, (b) => !taken.has(b.id), dr);
         return `<div class="lock"><label class="who" for="lk-${i}">${esc(p.name)}</label>
           <div class="combo"><input id="lk-${i}" data-lock-input="${esc(p.tag)}" type="text" placeholder="Type a brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lk-list-${i}"><ul class="combo-list" id="lk-list-${i}" role="listbox" hidden></ul></div></div>`;
@@ -291,19 +300,22 @@
     </div>`;
   }
 
-  const COMBO = "[data-lock-input],[data-ban-input],[data-gone-input]";
-  const comboKey = (input) => input.dataset.lockInput != null ? "lock:" + input.dataset.lockInput : input.dataset.banInput != null ? "ban:" + input.dataset.banInput : "gone";
+  const COMBO = "[data-lock-input],[data-ban-input],[data-draft-input]";
+  const comboKey = (input) => input.dataset.lockInput != null ? "lock:" + input.dataset.lockInput : input.dataset.banInput != null ? "ban:" + input.dataset.banInput : "draft:" + input.dataset.draftInput;
   function comboPick(input, o, fromKeyboard) {
     if (input.dataset.lockInput != null) lockIn(input.dataset.lockInput, o.id, fromKeyboard);
     else if (input.dataset.banInput != null) banIn(input.dataset.banInput, o.id, fromKeyboard);
-    else goneIn(o.id, fromKeyboard);
+    else draftIn(input.dataset.draftInput, o.id, fromKeyboard);
   }
+  // Matching ignores spaces and punctuation ("8bit" finds 8-Bit, "mrp" Mr. P, "elp" El Primo).
+  // Order: name starts with it, then a later word does ("primo"), then it appears anywhere.
+  const nameKeys = (name) => ({ key: norm(name), words: String(name).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map((w, i, a) => a.slice(i).join("")) });
   function comboMatches(key, q) {
     const all = comboOpts[key] || [];
-    q = q.trim().toLowerCase();
+    q = norm(q);
     if (!q) return all.slice(0, 6);
-    const starts = all.filter((o) => o.lower.startsWith(q)), rest = all.filter((o) => !o.lower.startsWith(q) && o.lower.includes(q));
-    return [...starts, ...rest].slice(0, 8);
+    const rank = (o) => (o.key.startsWith(q) ? 0 : o.words.some((w) => w.startsWith(q)) ? 1 : o.key.includes(q) ? 2 : 3);
+    return all.map((o) => [rank(o), o]).filter(([r]) => r < 3).sort((a, b) => a[0] - b[0]).map(([, o]) => o).slice(0, 8);
   }
   function drawCombo(input, active = 0) {
     const list = input.nextElementSibling;
@@ -311,7 +323,7 @@
     const items = comboMatches(comboKey(input), q);
     input._items = items;
     input._active = Math.min(active, items.length - 1);
-    const gone = comboKey(input) === "gone";
+    const gone = comboKey(input).startsWith("draft:");
     list.innerHTML = (!q.trim() && items.length ? `<li class="combo-head" role="presentation">${gone ? "Most picked here" : "Best for this map"}</li>` : "") +
       (items.length ? items.map((o, k) => `<li role="option" id="${input.id}-o${k}" data-k="${k}" aria-selected="${k === input._active}">${bImg(o.id)}<span><b>${esc(o.name)}</b><small>${esc(o.sub)}</small></span></li>`).join("")
         : `<li class="combo-empty" role="presentation">${gone ? "No brawler" : "No brawler they own"} matches “${esc(q.trim())}”</li>`);
@@ -328,8 +340,8 @@
   function lockIn(tag, id, fromKeyboard) {
     state.locks[tag] = id;
     rerender();
-    // Typing flow: jump straight to the next person who hasn't picked.
-    if (fromKeyboard) view.querySelector("[data-lock-input]")?.focus();
+    // Typing flow: jump straight to the next person who hasn't picked (in a Ranked draft, to whoever's turn it is).
+    if (fromKeyboard) (view.querySelector(".draft") ? focusTurn() : view.querySelector("[data-lock-input]")?.focus());
   }
   function banIn(tag, id, fromKeyboard) {
     state.excluded[tag] = [...(state.excluded[tag] || []).filter((x) => x !== id), id];
@@ -339,55 +351,143 @@
     if (fromKeyboard) view.querySelector(`[data-ban-input="${CSS.escape(tag)}"]`)?.focus();
   }
 
-  function goneIn(id, fromKeyboard) {
-    state.gone = [...state.gone.filter((x) => x !== id), id];
-    for (const t of Object.keys(state.locks)) if (state.locks[t] === id) delete state.locks[t];
-    rerender();
-    if (fromKeyboard) view.querySelector("[data-gone-input]")?.focus();
-  }
-
   // ---------- ranked ----------
   // Ranked is a draft (bans, then picks in turn) on its own map pool, so it gets its own numbers: top
   // players' Ranked games only, debiased separately (data/ranked.json). Same engine as the other maps.
   const RANK_TIERS = ["Bronze", "Silver", "Gold", "Diamond", "Mythic", "Legendary", "Masters", "Pro"];
   const rankedPool = () => (state.ranked?.pool || []).map((k) => state.ranked.maps[k]).filter(Boolean);
 
-  // Ban suggestions: how much stronger than even a brawler is here, times how often top players pick it.
-  // A rule of thumb for "most likely to beat us if left open", not something the model was tested on.
-  function banCandidates(md, n) {
+  // Ban suggestions: how much each brawler would cut our chances if the other team took it (against our
+  // planned comp, counters included), times how often top players pick it. Our own planned picks are
+  // skipped. A rule of thumb for "most likely to beat us if left open", not tested like the comp model.
+  function banCandidates(md, plan, theirs, skip, n) {
+    const base = md.draft(plan, theirs).L;
     return md.topBrawlers(500, 10)
-      .map((b) => ({ ...b, threat: b.pick * (b.p - 0.5) }))
-      .filter((b) => b.threat > 0 && b.pick >= 0.02)
+      .filter((b) => !skip.has(b.id) && b.pick >= 0.02)
+      .map((b) => ({ ...b, threat: b.pick * (base - md.draft(plan, [...theirs, b.id]).L) }))
+      .filter((b) => b.threat > 0)
       .sort((a, b) => b.threat - a.threat)
       .slice(0, n);
   }
 
-  function draftSection(md, players) {
-    const gone = state.gone;
-    // Flag a ban candidate that's also one of our own best picks: banning it hurts us too.
-    const ours = {};
-    for (const p of players.slice(0, 3)) {
-      for (const o of ranked(p, md, (b) => b.power >= state.minPower && !(state.excluded[p.tag] || []).includes(b.id)).slice(0, 3)) (ours[o.id] ||= []).push(p.name);
-    }
-    const bans = banCandidates(md, 8);
-    comboOpts.gone = Object.keys(brawlerById).map(Number).filter((id) => !gone.includes(id)).map((id) => {
+  // ---------- ranked drafter ----------
+  // Ranked draft: each player bans one, then picks go 1-2-2-1 starting with whoever has first pick.
+  const ORDER = { us: ["us", "them", "them", "us", "us", "them"], them: ["them", "us", "us", "them", "them", "us"] };
+  const LIMITS = { bans: 6, theirs: 3, allies: 3 };
+  const newDraft = () => ({ first: "us", bans: [], theirs: [], allies: [] });
+  // allies = picks by teammates outside the squad (solo queue).
+  const draftGone = (d) => [...d.bans, ...d.theirs, ...d.allies];
+  const allySlots = (players) => 3 - (players.length > 3 ? 0 : players.length);
+
+  function draftIn(field, id, fromKeyboard) {
+    const d = state.draft;
+    for (const f of ["bans", "theirs", "allies"]) d[f] = d[f].filter((x) => x !== id);
+    for (const t of Object.keys(state.locks)) if (state.locks[t] === id) delete state.locks[t];
+    d[field] = [...d[field], id].slice(-LIMITS[field]);
+    rerender();
+    if (fromKeyboard) focusTurn(field);
+  }
+
+  // Typing flow in a draft: stay in the bans box until all six are in, then follow the pick order.
+  function focusTurn(field) {
+    const box = (f) => view.querySelector(`[data-draft-input="${f}"]`);
+    if (field === "bans" && box("bans")) return box("bans").focus();
+    const side = view.querySelector(".steps .now")?.classList.contains("them") ? "them" : "us";
+    const target = side === "them" ? box("theirs") : view.querySelector(".draft [data-lock-input]") || box("allies");
+    (target || box("bans"))?.focus();
+  }
+
+  // Which of the six picks are made, and whose turn it is. Picks are matched to the order by count, so
+  // entering them a little out of order still works.
+  function draftSteps(d, ours) {
+    let u = ours, t = d.theirs.length;
+    const steps = ORDER[d.first].map((side) => ({ side, done: side === "us" ? u-- > 0 : t-- > 0 }));
+    const at = steps.findIndex((x) => !x.done);
+    let n = 0;
+    if (at >= 0) while (steps[at + n] && steps[at + n].side === steps[at].side && !steps[at + n].done) n++;
+    return { steps, at, side: at >= 0 ? steps[at].side : null, n };
+  }
+
+  function draftBox(field, label, d, max) {
+    const ids = d[field];
+    return `<div class="lock draft-box"><div class="draft-label"><span class="who">${label}</span><span class="who">${ids.length}/${max}</span></div>
+      ${ids.length ? `<div class="ban-chips${field === "bans" ? "" : " picked"}">${ids.map((id) => `<span class="ban-chip">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-undraft="${field}" data-id="${id}" aria-label="Remove ${esc(bName(id))}">×</button></span>`).join("")}</div>` : ""}
+      ${ids.length < max ? `<div class="combo"><input id="dr-${field}" data-draft-input="${field}" type="text" placeholder="Type a brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
+        role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dr-${field}-list" aria-label="${label}"><ul class="combo-list" id="dr-${field}-list" role="listbox" hidden></ul></div>` : ""}
+    </div>`;
+  }
+
+  function drafter(md, players, locked, recs, warn) {
+    const d = state.dv;
+    const squadPicks = players.length <= 3 ? locked.filter((x) => x != null) : [];
+    const ours = [...d.allies, ...squadPicks];
+    const gone = new Set([...draftGone(d), ...squadPicks]);
+    const turn = draftSteps(d, ours.length);
+    const allyMax = allySlots(players);
+
+    // Every brawler for the draft search boxes, most picked here first.
+    const all = Object.keys(brawlerById).map(Number).filter((id) => !gone.has(id)).map((id) => {
       const b = md.brawler(id);
-      return { id, name: bName(id), lower: bName(id).toLowerCase(), sub: `${pct(b.p)} here · ${pct(b.pick)} picked`, pick: b.pick };
+      return { id, name: bName(id), ...nameKeys(bName(id)), sub: `${pct(b.p)} here · ${pct(b.pick)} picked`, pick: b.pick };
     }).sort((a, b) => b.pick - a.pick);
+    comboOpts["draft:bans"] = comboOpts["draft:theirs"] = comboOpts["draft:allies"] = all;
+
+    // Best still open: on our turn, what adds most to our side; on theirs, what would hurt us most.
+    // The % is our chance with that pick made (unknown slots count as average).
+    const base = md.draft(ours, d.theirs).L;
+    const open = all.filter((o) => md.brawler(o.id).games >= 10).map((o) => {
+      const after = turn.side === "them" ? md.draft(ours, [...d.theirs, o.id]) : md.draft([...ours, o.id], d.theirs);
+      return { ...o, gain: turn.side === "them" ? base - after.L : after.L - base, p: after.p };
+    }).sort((a, b) => b.gain - a.gain).slice(0, 5);
+
+    // Squad suggestions for this turn: each open person's best 5 given every pick so far (synergy with our
+    // picks, counters against theirs), nudged toward what they're good on like the comps. The % is our
+    // chance if this person takes it now; picks still to come count as average.
+    const dr = { ours, theirs: d.theirs };
+    const forPlayer = players.length && players.length <= 3 ? players.map((p, j) => {
+      if (locked[j] != null) return null;
+      const keep = (b) => b.power >= state.minPower && !gone.has(b.id) && !(state.excluded[p.tag] || []).includes(b.id);
+      return { p, opts: ranked(p, md, keep, dr).slice(0, 5) };
+    }).filter(Boolean) : [];
+
+    let status;
+    if (turn.at < 0) status = `<b>Draft done.</b> Your chance against their comp: <b>${pct(md.draft(ours, d.theirs).p)}</b>.`;
+    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> ${forPlayer.length ? "Top 5 for whoever's picking, given every pick so far: your chance if they take it, and their record on it (tap to lock it in):" : "Top 5 still open, given every pick so far:"}`;
+    else status = `<b>Their turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Enter them as they lock in. What would hurt you most (your chance if they take it):`;
+    // Bans are judged against the comp we'd most likely end up with (the top suggestion), or any average team.
+    const plan = [...d.allies, ...(recs[0]?.picks.map((x) => x.id) || squadPicks)];
+    // Banned ones stay in the grid (greyed) so a mistaken tap can be undone.
+    const ban = banCandidates(md, plan, d.theirs, new Set([...d.theirs, ...d.allies, ...squadPicks, ...plan]), 8 + d.bans.length);
+    // Flag a ban candidate that's also one of our own best picks: banning it hurts us too.
+    const oursBest = {};
+    for (const p of players.slice(0, 3)) for (const o of ranked(p, md, (b) => b.power >= state.minPower && !(state.excluded[p.tag] || []).includes(b.id)).slice(0, 3)) (oursBest[o.id] ||= []).push(p.name);
+
+    // rec: the person's record on it lately, so "top pick" vs "higher %" is explained at a glance.
+    const rec = (pers) => (pers?.recentGames ? `${pers.recentWins}-${pers.recentGames - pers.recentWins} · 30d` : "");
+    const optChip = (id, p, note, form) => `<button type="button" class="next-opt" data-next="${id}" data-side="${turn.side}">${bImg(id)}<span><b>${esc(bName(id))}</b><small>${pct(p)}${note ? " · " + esc(note) : ""}</small>${form ? `<small>${esc(form)}</small>` : ""}</span></button>`;
     return `<section class="section">
-      <div class="section-head"><div><span class="eyebrow">Draft · bans</span><h2>Ban these</h2>
-        <p>Strong and popular here: how far above 50% each wins, times how often top players pick it. Tap one when it gets banned or picked by the other team.</p></div></div>
-      <div class="ban-grid">${bans.map((b) => `<button type="button" class="card ban-pick" data-gone-toggle="${b.id}" aria-pressed="${gone.includes(b.id)}">
-        ${bImg(b.id)}<span><b>${esc(bName(b.id))}</b><small>${pct(b.p)} · ${pct(b.pick)} picked</small>${ours[b.id] ? `<small class="ours">Also good for ${esc(ours[b.id].join(", "))}</small>` : ""}</span></button>`).join("")}</div>
-      <div class="card locks gone-card">
-        <div class="locks-head"><span class="label">Banned or taken</span>${gone.length ? `<button type="button" class="link" data-ungone-all>Clear all</button>` : ""}</div>
-        <div class="lock">
-          ${gone.length ? `<div class="ban-chips">${gone.map((id) => `<span class="ban-chip">${bImg(id)}<b>${esc(bName(id))}</b><button type="button" class="x" data-ungone="${id}" aria-label="${esc(bName(id))} is available again">×</button></span>`).join("")}</div>` : ""}
-          <div class="combo"><input id="gn" data-gone-input type="text" placeholder="Type a banned or enemy brawler…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
-            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="gn-list" aria-label="Banned or taken brawler"><ul class="combo-list" id="gn-list" role="listbox" hidden></ul></div>
+      <div class="section-head"><div><span class="eyebrow">Ranked draft</span><h2>Drafter</h2>
+        <p>Enter the bans and each pick as the draft happens. It tracks whose turn it is and gives the best next pick against what they've taken so far.</p></div>
+        <div class="draft-ctl"><span class="label">First pick</span><div class="seg" role="group" aria-label="Who picks first">${[["us", "Us"], ["them", "Them"]].map(([v, l]) => `<button type="button" data-first="${v}" aria-pressed="${d.first === v}">${l}</button>`).join("")}</div>
+          ${draftGone(d).length || squadPicks.length ? `<button type="button" class="link" data-draft-reset>New draft</button>` : ""}</div></div>
+      <div class="card draft">
+        ${warn ? `<p class="note" style="margin:0">${esc(warn)}</p>` : ""}
+        <ol class="steps" aria-label="Pick order">${turn.steps.map((x, i) => `<li class="${x.side}${x.done ? " done" : ""}${i === turn.at ? " now" : ""}"><span>${i + 1}</span>${x.side === "us" ? "You" : "Them"}</li>`).join("")}</ol>
+        <div class="draft-grid${allyMax ? "" : " two-col"}">
+          ${draftBox("bans", "Bans (both teams)", d, LIMITS.bans)}
+          ${draftBox("theirs", "Their picks", d, LIMITS.theirs)}
+          ${allyMax ? draftBox("allies", players.length ? "Teammates' picks (not in squad)" : "Your team's picks", d, allyMax) : ""}
         </div>
-        <p class="locks-note">${gone.length ? `${gone.length} out of this draft. They're left out of your comps below, for this game only.` : "Enter both teams' bans and the other team's picks as the draft goes. Your comps below fill in with what's left."}</p>
+        <p class="draft-status">${status}</p>
+        ${turn.at >= 0 ? `<div class="next">${turn.side === "us" && forPlayer.length
+          ? forPlayer.map((f) => `<div class="next-who"><span class="who">${esc(f.p.name)}</span><div class="next-opts">${f.opts.map((o, k) => optChip(o.id, o.p, `#${k + 1}`, rec(o.pers))).join("") || `<span class="muted">Nothing left they own</span>`}</div></div>`).join("")
+          : `<div class="next-opts">${open.map((o) => optChip(o.id, o.p, "")).join("")}</div>`}</div>` : ""}
+        ${players.length && players.length <= 3 ? lockRow(players, locked, md, true) : ""}
       </div>
+      <div class="section-head" style="margin:22px 0 10px"><div><span class="eyebrow">Ban calculator</span><h3 class="sub-h">Best bans${plan.length ? ` against ${esc(plan.map(bName).join(" + "))}` : ""}</h3>
+        <p>How much each would hurt ${plan.length ? "that comp (your top suggestion)" : "an average team"} if the other team got it, counters included, weighted by how often top players pick it. Your own planned picks are left off. Tap one to mark it banned.</p></div></div>
+      <div class="ban-grid">${ban.map((b) => `<button type="button" class="card ban-pick" data-ban-toggle="${b.id}" aria-pressed="${d.bans.includes(b.id)}">
+        ${bImg(b.id)}<span><b>${esc(bName(b.id))}</b><small>${pct(b.p)} · ${pct(b.pick)} picked</small>${oursBest[b.id] ? `<small class="ours">Also good for ${esc(oursBest[b.id].join(", "))}</small>` : ""}</span></button>`).join("")}</div>
     </section>`;
   }
 
@@ -419,32 +519,51 @@
     const now = Date.now();
     view.innerHTML = `
       <div class="section-head"><div><span class="eyebrow">Draft with bans · ${maps.length} maps in the pool · as of ${esc(shortDate(state.ranked.updated))}</span><h2 style="font-size:clamp(48px,9vw,88px)">Ranked</h2>
-        <p>Ranked has its own map pool and a draft, so these numbers come only from top players' Ranked games (${fmt(s.battles || 0)} last pull), not trophy games. Open a map when the draft starts: it suggests bans, and as you enter what's banned or taken it shows the best picks left for whoever's on.</p></div></div>
+        <p>Pick who's on, type the map and press Enter. The drafter then suggests bans and your next pick as you type in what gets banned and picked. Numbers come only from top players' Ranked games (${fmt(s.battles || 0)} last pull), not trophy games.</p></div></div>
+      ${picker(true)}
+      <div class="filters" style="margin-top:14px"><input class="search" id="rq" type="search" placeholder="Type the map, then Enter" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Find a Ranked map"></div>
+      <div id="rgroups"></div>
+
+      <section class="section">
+        <div class="section-head"><div><span class="eyebrow">This season</span><h2>Your ranks</h2></div></div>
       ${players.length ? `<div class="ranks">${players.map((p) => rankCard(p, now)).join("")}</div>
       <p class="muted ranks-note">Ranks are from the official API as of ${esc(shortDate(state.squad.updated))}. Ranked records count games since Oct 22, when the site started telling Ranked games apart.</p>` : ""}
       ${tierTotal ? `<div class="tier-bar" role="img" aria-label="Ranks the sampled Ranked games were played at">${tiers.map(([t, n]) => `<span style="--w:${(n / tierTotal) * 100}%" title="${esc(t)} ${pct(n / tierTotal)}">${n / tierTotal >= 0.04 ? `<b>${esc(t)}</b> ${Math.round((n / tierTotal) * 100)}%` : ""}</span>`).join("")}</div>
       <p class="muted ranks-note">The ranks the sampled Ranked games were played at (every player in them). It's top <i>trophy</i> players' games, so mostly high-rank but not a Masters or Pro meta.</p>` : ""}
-
-      <section class="section">
-        <div class="section-head"><div><span class="eyebrow">Who's drafting</span><h2>Ranked maps</h2></div></div>
-        ${picker(true)}
-        <div style="height:18px"></div>
-        ${maps.length ? modes.map((mode) => {
-          const list = maps.filter((m) => m.mode === mode).sort((a, b) => b.battles - a.battles);
-          return `<div class="group"><div class="group-head">${modeIcon(mode)}<h3>${esc(modeInfo(mode).name)}</h3><span class="count">${list.length}</span></div>
-            <ul class="tiles">${list.map((m) => `<li>${tile(m, true)}</li>`).join("")}</ul></div>`;
-        }).join("") : `<p class="note">No Ranked maps in the last pull.</p>`}
       </section>`;
+
+    const groups = document.getElementById("rgroups");
+    const input = document.getElementById("rq");
+    let shown = maps;
+    function draw() {
+      const qn = norm(input.value);
+      shown = maps.filter((m) => !qn || norm(m.map).includes(qn) || nameKeys(m.map).words.some((w) => w.startsWith(qn)))
+        .sort((a, b) => (qn ? norm(b.map).startsWith(qn) - norm(a.map).startsWith(qn) : 0) || modeRank(a.mode) - modeRank(b.mode) || b.battles - a.battles);
+      if (!maps.length) { groups.innerHTML = `<p class="note">No Ranked maps in the last pull.</p>`; return; }
+      if (!shown.length) { groups.innerHTML = `<p class="note">No Ranked map matches “${esc(input.value.trim())}”.</p>`; return; }
+      // While typing, one flat list with the best match first (Enter opens it); otherwise grouped by mode.
+      groups.innerHTML = qn ? `<ul class="tiles">${shown.map((m, i) => `<li${i === 0 ? ' class="first"' : ""}>${tile(m, true)}</li>`).join("")}</ul>`
+        : modes.map((mode) => {
+          const list = shown.filter((m) => m.mode === mode);
+          return list.length ? `<div class="group"><div class="group-head">${modeIcon(mode)}<h3>${esc(modeInfo(mode).name)}</h3><span class="count">${list.length}</span></div>
+            <ul class="tiles">${list.map((m) => `<li>${tile(m, true)}</li>`).join("")}</ul></div>` : "";
+        }).join("");
+    }
+    draw();
+    input.addEventListener("input", draw);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && shown.length && input.value.trim()) location.hash = mapHref(shown[0], true); });
+    // On a laptop, start typing the map right away (no keyboard popping up on phones).
+    if (matchMedia("(pointer: fine)").matches) input.focus();
   }
 
-  function compRow(r, players, i) {
+  function compRow(r, players, i, cap = "top players") {
     const seen = r.comp.trio ? ` · ${fmt(r.comp.trio.games)} games seen` : "";
     // With two or more people on, each brawler is a button that locks it in for that person.
     const slot = (p, j) => players.length === 1 ? `<div class="slot">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></div>` : `<button type="button" class="slot${p.locked ? " locked" : ""}" data-pick="${esc(players[j].tag)}" data-id="${p.id}" title="${p.locked ? "Unlock" : "Lock in"} ${esc(bName(p.id))} for ${esc(players[j].name)}">${bImg(p.id)}<div><div class="who">${esc(players[j].name)}${p.locked ? ' · <span class="picked">Picked</span>' : ""}</div><div class="bn">${esc(bName(p.id))}</div><div class="form">${esc(form(p.pers, players[j], p.id))}</div></div></button>`;
     return `<article class="card comp${i === 0 ? " top" : ""}">
       <span class="rank">${String(i + 1).padStart(2, "0")}</span>
       <div class="slots" style="--n:${players.length}">${r.picks.map(slot).join("")}</div>
-      <div class="score">${i === 0 ? '<span class="top-badge">Top pick</span>' : ""}<div class="pct-big">${pct(r.comp.p)}</div><div class="pct-cap">top players${seen}</div></div>
+      <div class="score">${i === 0 ? '<span class="top-badge">Top pick</span>' : ""}<div class="pct-big">${pct(r.comp.p)}</div><div class="pct-cap">${cap}${seen}</div></div>
     </article>`;
   }
 
@@ -542,16 +661,17 @@
         <li>All of this together counts at 0.3 times the meta's weight. Our own records come from lower-trophy games, where a main can win 85% or more, so at full weight they buried the meta. These weights are judgment calls; there aren't enough of our games yet to fit them from data.</li>
       </ul>
       <h2>The meta</h2>
-      <p>Every Monday the official Brawl Stars API gives the last 25 battles of about ${fmt(s.players || 3000)} top-ranked players. Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last week's counts stay in at half weight so smaller maps keep a sample.</p>
+      <p>Every Monday the official Brawl Stars API gives the last 25 battles of about ${fmt(s.players || 20000)} top-ranked players (the top 200 in every country with a leaderboard). Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last week's counts stay in at half weight so smaller maps keep a sample.</p>
       <p>Top players win far more than half their games, so whatever they pick would look stronger than it is. That edge is measured each week and taken back out. Win rates are pulled toward each brawler's mode-wide rate until there are enough games, so a 4-0 brawler doesn't top the list. Pair and trio records count only lightly, because they mostly reflect a few pre-made top teams.</p>
       <p>The model was checked by building it from half the top players and predicting games of the other half. After tuning, its percentages matched how often teams actually won.</p>
       <h2>Ranked</h2>
-      <p>The Ranked page uses only top players' Ranked games${state.ranked?.sample?.battles ? ` (${fmt(state.ranked.sample.battles)} last pull)` : ""}, debiased on their own the same way. That's a few hundred games per map, fewer than the main maps, so its percentages are rougher. The players sampled are top <i>trophy</i> players, so their Ranked games are mostly high-rank but not all: the bar on the Ranked page shows the split (in Oct 2026, about four in five were Mythic or Legendary, and almost none Masters or Pro). What wins there may not be what wins at Silver.</p>
-      <p>Ban suggestions rank brawlers by how far above 50% they win on the map times how often top players pick them. That's a rule of thumb for "most likely to beat us if left open", and it wasn't tested the way the comp model was. A ban that's also one of your own best picks is flagged.</p>
-      <p>It doesn't model counters (which brawler beats which). There aren't enough Ranked games per map to measure matchups without mostly reading noise.</p>
+      <p>The Ranked page uses only top players' Ranked games${state.ranked?.sample?.battles ? ` (${fmt(state.ranked.sample.battles)} last pull, about ${fmt(state.ranked.sample.battles / Math.max(1, (state.ranked.pool || []).length))} per map)` : ""}, debiased on their own the same way. The players sampled are top <i>trophy</i> players, so their Ranked games are spread across ranks: the bar on the Ranked page shows the split (in Oct 2026 mostly Mythic, Legendary and Diamond, almost no Masters or Pro). What wins there may not be what wins at Silver.</p>
+      <p><b>The drafter</b> follows the pick order (1-2-2-1 from whoever picks first). As you enter bans and picks, everything banned or taken is removed, and the next pick is the brawler that gives your team the best chance against what the other team has so far; picks still to come count as average. On their turn it shows what would hurt you most.</p>
+      <p><b>Counters</b> (how one brawler does against another) are measured per mode from the Ranked games. Tested on players held out of the data, they barely helped: knowing the counters improved predictions by a hair and didn't change the share of games called right (61.2% either way), and at full strength they made predictions worse. So they count at a quarter weight. Don't expect magic counter-picks; the drafter mostly helps by tracking what's gone and picking the strongest comp that's left.</p>
+      <p>Ban suggestions: how much each brawler would cut your chances if the other team got it (against the comp you'd most likely end up with), times how often top players pick it. That's a rule of thumb, not tested the way the comp model was.</p>
       <h2>What it can't tell you</h2>
       <ul>
-        <li><b>Picks matter less than skill.</b> On players the model hadn't seen, knowing both teams' brawlers raised the share of games called correctly only from 64.3% to 64.8%. A better comp tilts the odds a few points.</li>
+        <li><b>Picks matter less than skill.</b> On players the model hadn't seen, knowing both teams' brawlers raised the share of games called correctly only from 66.0% to 66.6% (Oct 2026, about 146,000 held-out games). A better comp tilts the odds a few points.</li>
         <li>It's top-player data. What wins at the top isn't always what wins at lower trophies.</li>
         <li>Balance changes show up the next Monday.</li>
         <li>The API only shows each player's last 25 games. Squad games are pulled daily, so only a day with more than 25 loses some.</li>
@@ -604,22 +724,35 @@
       view.querySelector(`[data-ban-input="${CSS.escape(tag)}"]`)?.focus();
       return;
     }
-    const gt = e.target.closest("[data-gone-toggle]");
-    if (gt) {
-      const id = +gt.dataset.goneToggle;
-      if (state.gone.includes(id)) { state.gone = state.gone.filter((x) => x !== id); rerender(); } else goneIn(id, false);
+    const bt = e.target.closest("[data-ban-toggle]");
+    if (bt) {
+      const id = +bt.dataset.banToggle;
+      if (state.draft.bans.includes(id)) { state.draft.bans = state.draft.bans.filter((x) => x !== id); rerender(); } else draftIn("bans", id, false);
       return;
     }
-    const ug = e.target.closest("[data-ungone]");
-    if (ug) { state.gone = state.gone.filter((x) => x !== +ug.dataset.ungone); rerender(); view.querySelector("[data-gone-input]")?.focus(); return; }
-    if (e.target.closest("[data-ungone-all]")) { state.gone = []; rerender(); return; }
+    const ud = e.target.closest("[data-undraft]");
+    if (ud) { const f = ud.dataset.undraft; state.draft[f] = state.draft[f].filter((x) => x !== +ud.dataset.id); rerender(); view.querySelector(`[data-draft-input="${f}"]`)?.focus(); return; }
+    const fp = e.target.closest("[data-first]");
+    if (fp) { state.draft.first = fp.dataset.first; rerender(); return; }
+    if (e.target.closest("[data-draft-reset]")) { state.draft = newDraft(); state.locks = {}; rerender(); return; }
+    // A suggested next pick: lock it for the only open squad member, or count it as a teammate's pick.
+    const nx = e.target.closest("[data-next]");
+    if (nx) {
+      const id = +nx.dataset.next, ps = selectedPlayers();
+      if (nx.dataset.side === "them") { draftIn("theirs", id, false); return; }
+      const who = nx.closest(".next-who")?.querySelector(".who")?.textContent;
+      const p = ps.find((x) => x.name === who) || (ps.filter((x) => state.locks[x.tag] == null).length === 1 ? ps.find((x) => state.locks[x.tag] == null) : null);
+      if (p && ps.length <= 3) lockIn(p.tag, id, false);
+      else if (state.dv.allies.length < allySlots(ps)) draftIn("allies", id, false);
+      return;
+    }
     if (e.target.closest("[data-unban-all]")) {
       for (const p of selectedPlayers()) delete state.excluded[p.tag];
       store.set("excluded", state.excluded);
       rerender();
     }
   });
-  // Type-to-search boxes in the "Already picked", "Don't suggest" and Ranked "Banned or taken" rows.
+  // Type-to-search boxes in the "Already picked" and "Don't suggest" rows and the Ranked drafter.
   view.addEventListener("focusin", (e) => { const i = e.target.closest(COMBO); if (i) drawCombo(i); });
   view.addEventListener("input", (e) => { const i = e.target.closest(COMBO); if (i) drawCombo(i); });
   view.addEventListener("focusout", (e) => {
@@ -636,6 +769,8 @@
       if (n) drawCombo(i, (i._active + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
     } else if (e.key === "Enter") {
       e.preventDefault();
+      // Draft boxes list the most-picked brawlers before you type; Enter there needs a typed name.
+      if (i.dataset.draftInput != null && !i.value.trim()) return;
       const o = i._items[i._active];
       if (o) comboPick(i, o, true);
     } else if (e.key === "Escape") { i.value = ""; closeCombo(i); i.blur(); }
@@ -643,7 +778,8 @@
   // On desktop, keep focus in the box while clicking a suggestion; the click handler does the locking.
   view.addEventListener("mousedown", (e) => { if (e.target.closest(".combo-list")) e.preventDefault(); });
   // Picker clicks re-render in place, without the page-enter animation or a jump to the top.
-  function rerender() { const y = window.scrollY; route(true); window.scrollTo(0, y); }
+  let inPlaceRender = false;
+  function rerender() { const y = window.scrollY; inPlaceRender = true; route(true); inPlaceRender = false; window.scrollTo(0, y); }
 
   // Brawlify sometimes lacks art for the newest brawlers; swap a broken portrait for its initials.
   document.addEventListener("error", (e) => {

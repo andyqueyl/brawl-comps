@@ -16,11 +16,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA = join(ROOT, "data");
 const API = process.env.BS_API_BASE || "https://bsproxy.royaleapi.dev/v1";
 const KEY = process.env.BS_API_KEY;
-const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 3000);
-const CONCURRENCY = Number(process.env.CONCURRENCY || 8);
+const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 20000);
+const CONCURRENCY = Number(process.env.CONCURRENCY || 16);
 // Last week's counts are kept at half weight, so the data leans on this week but small maps keep a sample.
 const DECAY = 0.5;
-const COUNTRIES = ["global", "US", "CA", "MX", "BR", "GB", "FR", "DE", "ES", "IT", "TR", "PL", "KR", "JP", "AU", "ID", "PH", "EG", "SA", "AR"];
+// Every country with a leaderboard (checked Oct 22, 2026): top 200 each, about 19,800 players in all.
+const COUNTRIES = ("global US CA MX BR GB FR DE ES IT TR PL KR JP AU ID PH EG SA AR CL CO PE VE EC UY BO PY CR GT DO PA HN SV NI PR " +
+  "PT NL BE CH AT SE NO DK FI IE CZ SK HU RO BG GR HR RS SI UA BY RU KZ UZ AZ GE AM IL AE QA KW BH OM JO LB IQ IR MA DZ TN LY " +
+  "NG GH KE ZA ET IN PK BD LK NP MM TH VN MY SG KH LA TW HK CN MO MN NZ").split(" ");
 const DUMP = process.env.DUMP_BATTLES; // optional path: also save every counted battle, for offline checks
 const COUNTED_TYPES = new Set(["ranked", "soloRanked", "teamRanked"]);
 // "ranked" in the API is a trophy game; these two are the Ranked mode (draft with bans).
@@ -177,7 +180,7 @@ async function collectMeta() {
       if (DUMP) dump.push([bt.mode, bt.map, bt.type, bt.teams.map((t) => t.map((p) => p.id)), bt.result === "victory" ? mine : 1 - mine, has, bt.teams.flat().filter((p) => sampled.has(p.tag)).map((p) => p.tag)]);
       countBattle(maps, sideTally, bt, mine, has);
       if (RANKED_TYPES.has(bt.type)) {
-        countBattle(ranked, rankedTally, bt, mine, has);
+        countBattle(ranked, rankedTally, bt, mine, has, true);
         rankedBattles++;
         for (const p of bt.teams.flat()) {
           const tier = RANK_TIERS[Math.ceil((p.trophies || 0) / 3) - 1] || "Pro";
@@ -193,9 +196,10 @@ async function collectMeta() {
   return { maps, battles: seen.size, players: players.length, edge, ranked, rankedBattles, rankedEdge, rankTiers };
 }
 
-function countBattle(maps, sideTally, bt, mine, has) {
+// withVs: also count matchups ("a-b" with a < b: games where a faced b, and a's wins), for the Ranked drafter.
+function countBattle(maps, sideTally, bt, mine, has, withVs) {
   const k = bt.mode + "|" + bt.map;
-  const m = maps[k] || (maps[k] = { mode: bt.mode, map: bt.map, mapId: bt.mapId, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {} });
+  const m = maps[k] || (maps[k] = { mode: bt.mode, map: bt.map, mapId: bt.mapId, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {}, ...(withVs ? { vs: {} } : {}) });
   m.battles += 1;
   if (RANKED_TYPES.has(bt.type)) m.ranked += 1;
   bt.teams.forEach((team, i) => {
@@ -211,6 +215,8 @@ function countBattle(maps, sideTally, bt, mine, has) {
     for (const id of ids) addSide(m.brawlers, id, side, win);
     for (const pk of combos(ids, 2)) addSide(m.pairs, pk, side, win);
     if (ids.length === 3) addSide(m.trios, ids.join("-"), side, win);
+    // Each matchup is counted once, from the side of the lower-id brawler.
+    if (withVs) for (const a of ids) for (const b of bt.teams[1 - i].map((p) => p.id)) if (a < b) addSide(m.vs, a + "-" + b, side, win);
   });
 }
 
@@ -238,8 +244,8 @@ function debias(maps, sideTally) {
   }
   for (const m of Object.values(maps)) {
     const h = hMode[m.mode] ?? hAll;
-    for (const field of ["brawlers", "pairs", "trios"]) {
-      for (const [key, [gS, wS, gO, wO, gN, wN]] of Object.entries(m[field])) {
+    for (const field of ["brawlers", "pairs", "trios", "vs"]) {
+      for (const [key, [gS, wS, gO, wO, gN, wN]] of Object.entries(m[field] || {})) {
         let w = wN;
         if (gS) w += gS * sig(lg(wS, gS) - h);
         if (gO) w += gO * sig(lg(wO, gO) + h);
@@ -250,7 +256,9 @@ function debias(maps, sideTally) {
   return edge;
 }
 
-// Blend this week's counts with last week's at DECAY weight, then drop thin pair/trio rows to keep the file small.
+// Blend this week's counts with last week's at DECAY weight, then drop thin pair/trio/matchup rows to keep the
+// files small. With ~20k players, rows under 8 games were 3/4 of the bytes (8 MB) but under the engine's heavy
+// shrinkage (K 100-300) they barely move any estimate.
 function blend(fresh, previous) {
   const out = {};
   const keys = new Set([...Object.keys(fresh), ...Object.keys(previous || {})]);
@@ -258,12 +266,13 @@ function blend(fresh, previous) {
     const a = fresh[k];
     const b = previous?.[k];
     const base = a || b;
-    const m = { mode: base.mode, map: base.map, mapId: base.mapId || b?.mapId || null, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {} };
+    const m = { mode: base.mode, map: base.map, mapId: base.mapId || b?.mapId || null, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {}, ...(base.vs ? { vs: {} } : {}) };
     for (const [src, w] of [[a, 1], [b, DECAY]]) {
       if (!src) continue;
       m.battles += src.battles * w;
       m.ranked += (src.ranked || 0) * w;
-      for (const field of ["brawlers", "pairs", "trios"]) {
+      for (const field of ["brawlers", "pairs", "trios", "vs"]) {
+        if (!src[field] || !m[field]) continue;
         for (const [id, [g, wins]] of Object.entries(src[field])) {
           const c = m[field][id] || (m[field][id] = [0, 0]);
           c[0] += g * w;
@@ -274,8 +283,8 @@ function blend(fresh, previous) {
     if (m.battles < 2) continue;
     m.battles = round1(m.battles);
     m.ranked = round1(m.ranked);
-    for (const [field, min] of [["brawlers", 0.5], ["pairs", 2], ["trios", 2]]) {
-      for (const [id, c] of Object.entries(m[field])) {
+    for (const [field, min] of [["brawlers", 0.5], ["pairs", 8], ["trios", 8], ["vs", 8]]) {
+      for (const [id, c] of Object.entries(m[field] || {})) {
         if (c[0] < min) delete m[field][id];
         else m[field][id] = [round1(c[0]), round1(c[1])];
       }

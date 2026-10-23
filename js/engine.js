@@ -29,6 +29,11 @@
   // Summed team scores ran about 20% too confident when predicting battles of players held out of
   // the data (Oct 2026), because part of a brawler's record is the skill of the top players who main it.
   const TEAM_SCALE = 0.8;
+  // Matchups (Ranked data only): how brawler a does against b beyond what their mode-wide strengths
+  // predict, pooled over the mode's maps. K_VS imaginary games pull each record to "no counter".
+  // VS_WEIGHT scales the summed counters; both are set from a held-out player-split check (see CLAUDE.md).
+  let K_VS = 100;
+  let VS_WEIGHT = 0.25;
 
   const logit = (p) => Math.log(p / (1 - p));
   const sigmoid = (x) => 1 / (1 + Math.exp(-x));
@@ -54,12 +59,14 @@
   function modeTotals(meta) {
     const out = {};
     for (const m of Object.values(meta.maps)) {
-      const t = out[m.mode] || (out[m.mode] = { battles: 0, brawlers: {} });
+      const t = out[m.mode] || (out[m.mode] = { battles: 0, brawlers: {}, vs: {} });
       t.battles += m.battles;
-      for (const [id, [g, w]] of Object.entries(m.brawlers)) {
-        const c = t.brawlers[id] || (t.brawlers[id] = [0, 0]);
-        c[0] += g;
-        c[1] += w;
+      for (const field of ["brawlers", "vs"]) {
+        for (const [id, [g, w]] of Object.entries(m[field] || {})) {
+          const c = t[field][id] || (t[field][id] = [0, 0]);
+          c[0] += g;
+          c[1] += w;
+        }
       }
     }
     for (const t of Object.values(out)) t.k = fitK(Object.values(t.brawlers).map(([g, w]) => [g, w, 0.5]));
@@ -71,7 +78,7 @@
     const m = meta.maps[key];
     if (!m) return null;
     totals = totals || modeTotals(meta);
-    const mode = totals[m.mode] || { battles: 0, brawlers: {}, k: 100 };
+    const mode = totals[m.mode] || { battles: 0, brawlers: {}, vs: {}, k: 100 };
     const brawlerCache = {};
     const modeP = (id) => {
       const [gm, wm] = mode.brawlers[id] || [0, 0];
@@ -112,6 +119,26 @@
       return { L, p: sigmoid(L), trio };
     }
 
+    // Log-odds edge of a over b from their matchup record (0 when unseen or without Ranked data).
+    function versus(a, b) {
+      a = +a; b = +b;
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      const c = mode.vs[lo + "-" + hi];
+      if (!c || !VS_WEIGHT) return 0;
+      const expected = sigmoid(logit(modeP(lo)) - logit(modeP(hi)));
+      const edge = logit(shrink(c[0], c[1], expected, K_VS)) - logit(expected);
+      return a === lo ? edge : -edge;
+    }
+    const counters = (ours, theirs) => VS_WEIGHT * ours.reduce((s, a) => s + theirs.reduce((t, b) => t + versus(a, b), 0), 0);
+
+    // Our chance against a (possibly partial) enemy team; unknown enemy slots count as average.
+    function draft(ours, theirs) {
+      const us = ours.length ? team(ours) : { L: 0, trio: null };
+      const them = theirs.length ? team(theirs).L : 0;
+      const L = us.L - them + TEAM_SCALE * counters(ours, theirs);
+      return { L, p: sigmoid(L), trio: us.trio };
+    }
+
     function topBrawlers(n = 20, minGames = 0) {
       return Object.keys(m.brawlers)
         .map(brawler)
@@ -131,7 +158,7 @@
         .slice(0, n);
     }
 
-    return { info: m, kMap, brawler, pairSynergy, team, topBrawlers, topTeams };
+    return { info: m, kMap, brawler, pairSynergy, team, versus, counters, draft, topBrawlers, topTeams };
   }
 
   // How well a specific player fits a brawler, on top of the meta.
@@ -170,22 +197,28 @@
   // Best comps for the selected squad members on one map. Each member plays a different brawler they own.
   // opts.locked[i] = a brawler id player i has already picked in game; only the others' picks are searched.
   // opts.excluded[i] = brawler ids never to suggest for player i (a lock still wins over an exclusion).
+  // Ranked drafts: opts.enemies = the other team's picks so far, opts.allies = picks by teammates outside
+  // the squad. Both change the score (team strength, then counters); the % becomes our chance against them.
   function recommend(model, players, opts = {}) {
     const minPower = opts.minPower ?? 1;
     const limit = opts.limit ?? 6;
     const pw = opts.personalWeight ?? PERSONAL_WEIGHT;
     const locked = opts.locked || [];
     const excluded = opts.excluded || [];
+    const enemies = opts.enemies || [];
+    const allies = opts.allies || [];
+    const drafting = enemies.length > 0 || allies.length > 0;
+    const score = (ids) => (drafting ? model.draft([...allies, ...ids], enemies) : model.team(ids));
     const candidate = (pl, id, isLocked = false) => {
       const meta = model.brawler(id);
       const pers = personal(pl, id, { mode: model.info.mode, now: opts.now });
-      return { id: +id, meta, pers, solo: meta.L + pw * pers.L, locked: isLocked };
+      return { id: +id, meta, pers, solo: meta.L + TEAM_SCALE * model.counters([id], enemies) + pw * pers.L, locked: isLocked };
     };
     const pools = players.map((pl, i) =>
       locked[i] != null && pl.brawlers.some((b) => b.id === +locked[i])
         ? [candidate(pl, locked[i], true)]
         : pl.brawlers
-            .filter((b) => b.power >= minPower && !locked.includes(b.id) && !(excluded[i] || []).includes(b.id))
+            .filter((b) => b.power >= minPower && !locked.includes(b.id) && !allies.includes(b.id) && !(excluded[i] || []).includes(b.id))
             .map((b) => candidate(pl, b.id))
             .sort((a, b) => b.solo - a.solo)
             // With picks locked there are fewer combinations, so each open player can afford a deeper pool.
@@ -193,14 +226,15 @@
     );
 
     if (players.length === 1) {
-      return pools[0].slice(0, limit * 2).map((c) => ({ picks: [c], score: c.solo, comp: model.team([c.id]) }));
+      if (!drafting) return pools[0].slice(0, limit * 2).map((c) => ({ picks: [c], score: c.solo, comp: model.team([c.id]) }));
+      return pools[0].map((c) => { const comp = score([c.id]); return { picks: [c], score: comp.L + pw * c.pers.L, comp }; }).sort((a, b) => b.score - a.score).slice(0, limit * 2);
     }
 
     const results = [];
     const pick = (i, chosen) => {
       if (i === pools.length) {
         const ids = chosen.map((c) => c.id);
-        const comp = model.team(ids);
+        const comp = score(ids);
         const pers = pw * chosen.reduce((s, c) => s + c.pers.L, 0);
         results.push({ picks: chosen.slice(), score: comp.L + pers, comp });
         return;
@@ -231,7 +265,9 @@
     return out;
   }
 
-  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend, PERSONAL_WEIGHT };
+  // setVs: lets the held-out check (scripts/check-counters.cjs) try other matchup settings.
+  const setVs = (k, w) => { K_VS = k; VS_WEIGHT = w; };
+  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend, setVs, PERSONAL_WEIGHT, TEAM_SCALE };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else globalThis.BrawlEngine = api;
 })();

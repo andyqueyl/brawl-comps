@@ -22,9 +22,11 @@
   const TROPHY_WEIGHT = 0.4;  // best brawler by highest trophies gets +0.4, worst gets -0.4
   const POWER_STEP = 0.06;    // log-odds lost per power level under 11
   // How much "what we're good on" counts next to top players' win rates when ranking comps.
-  // Our own records come from lower-trophy games, where a main can win 85%+, so at full weight they
-  // swamped the meta and a 63% comp could outrank a 70% one. Judgment call (Oct 2026), not fitted.
-  const PERSONAL_WEIGHT = 0.3;
+  // Andy, Oct 23: "70% win rate and 30% our games", i.e. score = 0.7 x meta + 0.3 x personal, which
+  // ranks the same as meta + (0.3 / 0.7) x personal. Personal fit spreads far wider than meta numbers,
+  // so in practice nearly every top pick is someone's main (Oct 23 data: 100% at this weight, 99% at the
+  // old 0.3). The Ranked drafter uses 0 instead (app.js RANKED_PW). Judgment call, not fitted.
+  const PERSONAL_WEIGHT = 0.3 / 0.7;
   const CANDIDATES = 14;     // best brawlers per player considered when building comps
   // Summed team scores ran about 20% too confident when predicting battles of players held out of
   // the data (Oct 2026), because part of a brawler's record is the skill of the top players who main it.

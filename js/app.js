@@ -46,6 +46,9 @@
   const model = (key, rk) => (rk ? E.mapModel(state.ranked, key, state.rtotals) : E.mapModel(state.meta, key, state.totals));
   const modeRank = (mode) => (FOCUS.includes(mode) ? FOCUS.indexOf(mode) : 9);
   const recommend = (md, players, limit, locked, excluded, more) => E.recommend(md, players, { minPower: state.minPower, limit, locked, excluded, now: Date.now(), ...more });
+  // Ranked ranks on top players' win rates only (Andy, Oct 23); the regular maps keep the personal nudge.
+  const RANKED_PW = 0;
+  const pw = () => (state.rk ? RANKED_PW : E.PERSONAL_WEIGHT);
 
   // ---------- squad picker ----------
   function picker(compact) {
@@ -175,6 +178,7 @@
     const best = md.topBrawlers(1, 10)[0];
     // Picks already made in the lobby (and in a Ranked draft, bans and the other team's picks). They belong
     // to one game, so they reset when you open another map.
+    state.rk = !!rk;
     const lockKey = (rk ? "ranked:" : "") + key;
     if (state.lockMap !== lockKey) { state.locks = {}; state.draft = newDraft(); state.lockMap = lockKey; }
     // Teammates outside the squad fill whatever slots the selected squad doesn't. Extra ones are kept
@@ -189,7 +193,7 @@
     if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
-      recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded, rk ? { enemies: d.theirs, allies: d.allies } : {});
+      recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded, rk ? { enemies: d.theirs, allies: d.allies, personalWeight: RANKED_PW } : {});
       // In a Ranked draft your own picks are entered in the drafter instead.
       comps = (!rk && players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
         (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i, rk && d.theirs.length ? "vs their picks" : "top players")).join("")}</div>`
@@ -215,7 +219,7 @@
 
       <section class="section">
         <div class="section-head"><div><span class="eyebrow">${rk ? "Draft · your picks" : "Ranked for your squad"}</span><h2>Your comps</h2>
-          <p>${rk ? "Ranked mostly by your chance against what the other team has picked so far (the %, from top players' Ranked games here, counters included), then nudged toward what each of you is good on. Anything banned or taken in the drafter is left out."
+          <p>${rk ? "Ranked by your chance against what the other team has picked so far (the %, from top players' Ranked games here, counters included). Only brawlers you own count; your own stats don't. Anything banned or taken in the drafter is left out."
             : "Ranked mostly by how each comp does for top players on this map (the %), then nudged toward what each of you is good on (recent games, then highest trophies)."}</p></div></div>
         ${picker(true)}
         <div style="height:12px"></div>
@@ -253,7 +257,7 @@
     return p.brawlers.filter(keep).map((b) => {
       const meta = dr ? md.draft([...dr.ours, b.id], dr.theirs) : md.brawler(b.id);
       const pers = E.personal(p, b.id, { mode: md.info.mode, now });
-      return { id: b.id, name: bName(b.id), ...nameKeys(bName(b.id)), sub: `${pct(meta.p)} ${dr?.theirs.length ? "vs them" : "here"} · P${b.power}`, p: meta.p, pers, fit: meta.L + E.PERSONAL_WEIGHT * pers.L };
+      return { id: b.id, name: bName(b.id), ...nameKeys(bName(b.id)), sub: `${pct(meta.p)} ${dr?.theirs.length ? "vs them" : "here"} · P${b.power}`, p: meta.p, pers, fit: meta.L + pw() * pers.L };
     }).sort((a, b) => b.fit - a.fit);
   }
   function lockRow(players, locked, md, rk) {
@@ -441,7 +445,7 @@
     }).sort((a, b) => b.gain - a.gain).slice(0, 5);
 
     // Squad suggestions for this turn: each open person's best 5 given every pick so far (synergy with our
-    // picks, counters against theirs), nudged toward what they're good on like the comps. The % is our
+    // picks, counters against theirs), ranked on top players' numbers only (RANKED_PW). The % is our
     // chance if this person takes it now; picks still to come count as average.
     const dr = { ours, theirs: d.theirs };
     const forPlayer = players.length && players.length <= 3 ? players.map((p, j) => {
@@ -452,7 +456,7 @@
 
     let status;
     if (turn.at < 0) status = `<b>Draft done.</b> Your chance against their comp: <b>${pct(md.draft(ours, d.theirs).p)}</b>.`;
-    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> ${forPlayer.length ? "Top 5 for whoever's picking, given every pick so far: your chance if they take it, and their record on it (tap to lock it in):" : "Top 5 still open, given every pick so far:"}`;
+    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> ${forPlayer.length ? "Top 5 for whoever's picking, given every pick so far, ranked by top players' win rates: your chance if they take it, and their own record for reference (tap to lock it in):" : "Top 5 still open, given every pick so far:"}`;
     else status = `<b>Their turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Enter them as they lock in. What would hurt you most (your chance if they take it):`;
     // Bans are judged against the comp we'd most likely end up with (the top suggestion), or any average team.
     const plan = [...d.allies, ...(recs[0]?.picks.map((x) => x.id) || squadPicks)];
@@ -646,7 +650,7 @@
     view.innerHTML = `<article class="prose">
       <span class="eyebrow">How the picks are made</span>
       <h1>Method</h1>
-      <p>Two things go into every comp: how brawlers do on that map for top players, which counts most, and what each of us has been good on.</p>
+      <p>Two things go into every comp on the regular maps: how brawlers do on that map for top players, which counts most, and what each of us has been good on. Ranked uses top players' numbers only (see Ranked below).</p>
       <div class="facts">
         <div><span class="label">Battles, last pull</span><b>${fmt(s.battles || 0)}</b></div>
         <div><span class="label">Top players sampled</span><b>${fmt(s.players || 0)}</b></div>
@@ -658,7 +662,8 @@
         <li><b>Recent games count most:</b> your record on a brawler and how much you've been playing it. A game three weeks old counts half as much as one today, and games in other modes count half.</li>
         <li><b>Then highest trophies:</b> your best brawler by highest trophies gets a boost, your lowest a penalty.</li>
         <li>Every power level under 11 costs a little.</li>
-        <li>All of this together counts at 0.3 times the meta's weight. Our own records come from lower-trophy games, where a main can win 85% or more, so at full weight they buried the meta. These weights are judgment calls; there aren't enough of our games yet to fit them from data.</li>
+        <li>The blend is 70% top players' win rate, 30% what you're good on. Because your records swing much more than top-player win rates do (a main can be 56-21), that 30% still decides most picks: nearly every top pick is someone's main. These weights are judgment calls; there aren't enough of our games yet to fit them from data.</li>
+        <li><b>Not in Ranked:</b> the Ranked drafter ranks on top players' win rates only. Your own stats just decide which brawlers you own; your recent record is shown for reference.</li>
       </ul>
       <h2>The meta</h2>
       <p>Every Monday the official Brawl Stars API gives the last 25 battles of about ${fmt(s.players || 20000)} top-ranked players (the top 200 in every country with a leaderboard). Trophy and Ranked 3v3 games count; 5v5, Showdown, Duels and friendlies don't. Last week's counts stay in at half weight so smaller maps keep a sample.</p>

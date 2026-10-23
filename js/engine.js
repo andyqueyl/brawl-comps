@@ -174,15 +174,28 @@
     return below / (sorted.length - 1);
   }
 
+  // Cached per person, brawler, mode and minute: a draft redraw asks for the same ones hundreds of times.
+  const personalCache = new WeakMap();
   function personal(player, id, ctx = {}) {
+    const now = ctx.now || Date.now();
+    let cache = personalCache.get(player);
+    if (!cache) personalCache.set(player, (cache = new Map()));
+    const key = id + "|" + (ctx.mode || "") + "|" + Math.floor(now / 6e4);
+    if (cache.has(key)) return cache.get(key);
+    const out = personalRaw(player, id, now, ctx.mode);
+    if (cache.size > 5000) cache.clear();
+    cache.set(key, out);
+    return out;
+  }
+
+  function personalRaw(player, id, now, mode) {
     const owned = player.brawlers.find((b) => b.id === +id);
     if (!owned) return null;
-    const now = ctx.now || Date.now();
     let g = 0, w = 0, recentGames = 0, recentWins = 0, lastPlayed = 0;
-    for (const [t, bid, mode, won] of player.games || []) {
+    for (const [t, bid, gameMode, won] of player.games || []) {
       if (bid !== +id) continue;
       const age = Math.max(0, (now - t) / 864e5);
-      const weight = 0.5 ** (age / HALF_LIFE_DAYS) * (ctx.mode && mode !== ctx.mode ? OTHER_MODE : 1);
+      const weight = 0.5 ** (age / HALF_LIFE_DAYS) * (mode && gameMode !== mode ? OTHER_MODE : 1);
       g += weight;
       w += weight * won;
       if (age <= 30) { recentGames++; recentWins += won; }
@@ -267,9 +280,57 @@
     return out;
   }
 
+  // Options for player j in a draft, each judged by the best full comp it fits into: for every brawler j
+  // could take, the best brawlers the other open players own to go with it (pair/trio synergy and counters
+  // included). Same opts as recommend(). Returns [{ id, comp, pers, mates: [{ i, id }] }], best first.
+  function nextPicks(model, players, j, opts = {}) {
+    const minPower = opts.minPower ?? 1;
+    const pw = opts.personalWeight ?? PERSONAL_WEIGHT;
+    const locked = opts.locked || [];
+    const excluded = opts.excluded || [];
+    const enemies = opts.enemies || [];
+    const allies = opts.allies || [];
+    const taken = new Set([...locked.filter((x) => x != null).map(Number), ...allies]);
+    const pool = (i, depth) => players[i].brawlers
+      .filter((b) => b.power >= minPower && !taken.has(b.id) && !(excluded[i] || []).includes(b.id))
+      .map((b) => {
+        const pers = personal(players[i], b.id, { mode: model.info.mode, now: opts.now });
+        return { id: b.id, pers, solo: model.brawler(b.id).L + TEAM_SCALE * model.counters([b.id], enemies) + pw * pers.L };
+      })
+      .sort((a, b) => b.solo - a.solo)
+      .slice(0, depth);
+    // j's pool runs a bit deeper than its teammates'. Kept small so a draft step redraws fast on a phone:
+    // a brawler outside someone's top 10 almost never makes the best comp.
+    const depth = Math.max(16, (opts.limit ?? 8) * 2);
+    const mine = pool(j, depth);
+    const rest = players.map((_, i) => i).filter((i) => i !== j && locked[i] == null).map((i) => ({ i, pool: pool(i, 10) }));
+    const fixed = locked.filter((x, i) => x != null && i !== j).map(Number);
+    const out = [];
+    for (const c of mine) {
+      let best = null;
+      const walk = (k, chosen) => {
+        if (k === rest.length) {
+          const comp = model.draft([...allies, ...fixed, c.id, ...chosen.map((x) => x.id)], enemies);
+          const score = comp.L + pw * (c.pers.L + chosen.reduce((t, x) => t + x.pers.L, 0));
+          if (!best || score > best.score) best = { id: c.id, score, comp, pers: c.pers, mates: chosen.map((x, m) => ({ i: rest[m].i, id: x.id })) };
+          return;
+        }
+        for (const x of rest[k].pool) {
+          if (x.id === c.id || chosen.some((y) => y.id === x.id)) continue;
+          chosen.push(x);
+          walk(k + 1, chosen);
+          chosen.pop();
+        }
+      };
+      walk(0, []);
+      if (best) out.push(best);
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, opts.limit ?? 8);
+  }
+
   // setVs: lets the held-out check (scripts/check-counters.cjs) try other matchup settings.
   const setVs = (k, w) => { K_VS = k; VS_WEIGHT = w; };
-  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend, setVs, PERSONAL_WEIGHT, TEAM_SCALE };
+  const api = { logit, sigmoid, shrink, modeTotals, mapModel, personal, recommend, nextPicks, setVs, PERSONAL_WEIGHT, TEAM_SCALE };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else globalThis.BrawlEngine = api;
 })();

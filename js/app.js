@@ -451,15 +451,18 @@
     const free = Math.max(0, 3 - players.length - d.allies.length);
     const anyone = Object.keys(brawlerById).map((id) => ({ id: +id, power: 11, highest: 0 }));
     const team = [...players, ...Array.from({ length: free }, (_, k) => ({ name: players.length || d.allies.length ? `Teammate ${k + 1}` : `Pick ${k + 1}`, tag: "", brawlers: anyone, games: [] }))];
-    const comps = team.length ? E.recommend(md, team, {
-      minPower: state.minPower, limit: 5, now: Date.now(), enemies: d.theirs, allies: d.allies, personalWeight: RANKED_PW,
+    const draftOpts = {
+      minPower: state.minPower, now: Date.now(), enemies: d.theirs, allies: d.allies, personalWeight: RANKED_PW,
       locked: team.map((_, i) => locked[i] ?? null),
       excluded: team.map((p) => [...(p.tag ? state.excluded[p.tag] || [] : []), ...draftGone(d)]),
-    }) : [];
+    };
+    const comps = team.length ? E.recommend(md, team, { ...draftOpts, limit: 3 }) : [];
+    // On our turn, each open squad member's 8 best options, each scored by the best comp it fits into.
+    const options = turn.side === "us" ? players.map((p, j) => (locked[j] != null ? null : { p, opts: E.nextPicks(md, team, j, { ...draftOpts, limit: 8 }) })).filter(Boolean) : [];
 
     let status;
     if (turn.at < 0) status = `<b>Draft done.</b> Your chance against their comp: <b>${pct(md.draft(ours, d.theirs).p)}</b>.`;
-    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Top 5 comps from here, by top players' win rates against what they've picked. Take your picks from #1, or tap any brawler to lock it in:`;
+    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Best comps from here, by top players' win rates against what they've picked, then 8 options for each of you. Tap any brawler to lock it in.`;
     else status = `<b>Their turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Enter them as they lock in. What would hurt you most (your chance if they take it):`;
     // Bans are judged against the comp we'd most likely end up with (the top suggestion), or any average team.
     const plan = [...d.allies, ...(comps[0]?.picks.map((x) => x.id) || squadPicks)];
@@ -493,7 +496,8 @@
         </div>
         <p class="draft-status">${status}</p>
         ${turn.at >= 0 ? `<div class="next">${turn.side === "us"
-          ? comps.map(compLine).join("") || `<p class="muted">No comps left with what you own at power ${state.minPower}+.</p>`
+          ? (comps.map(compLine).join("") || `<p class="muted">No comps left with what you own at power ${state.minPower}+.</p>`) +
+            (options.length ? `<span class="label next-label">8 options each · % is the best comp it fits into</span>` + options.map((f) => `<div class="next-who"><span class="who">${esc(f.p.name)}</span><div class="next-opts eight">${f.opts.map((o, k) => `<button type="button" class="next-opt" data-next="${o.id}" data-side="us" data-for="${esc(f.p.tag)}" title="Lock ${esc(bName(o.id))} for ${esc(f.p.name)}">${bImg(o.id)}<span><b>${esc(bName(o.id))}</b><small>${pct(o.comp.p)} · #${k + 1}</small>${o.mates.length ? `<small>w/ ${esc(o.mates.map((m) => bName(m.id)).join(" + "))}</small>` : ""}</span></button>`).join("") || `<span class="muted">Nothing left they own</span>`}</div></div>`).join("") : "")
           : `<div class="next-opts">${open.map((o) => optChip(o.id, o.p)).join("")}</div>`}</div>` : ""}
         ${players.length && players.length <= 3 ? lockRow(players, locked, md, true) : ""}
       </div>
@@ -680,7 +684,7 @@
       <p>The model was checked by building it from half the top players and predicting games of the other half. After tuning, its percentages matched how often teams actually won.</p>
       <h2>Ranked</h2>
       <p>The Ranked page uses only top players' Ranked games${state.ranked?.sample?.battles ? ` (${fmt(state.ranked.sample.battles)} last pull, about ${fmt(state.ranked.sample.battles / Math.max(1, (state.ranked.pool || []).length))} per map)` : ""}, debiased on their own the same way. The players sampled are top <i>trophy</i> players, so their Ranked games are spread across ranks: the bar on the Ranked page shows the split (in Oct 2026 mostly Mythic, Legendary and Diamond, almost no Masters or Pro). What wins there may not be what wins at Silver.</p>
-      <p><b>The drafter</b> follows the pick order (1-2-2-1 from whoever picks first). As you enter bans and picks, everything banned or taken is removed and it builds the top 5 full comps from here: three brawlers that work together (pair and trio records from top players' Ranked games), against what the other team has picked so far, from brawlers each of you owns. No comp repeats and nobody is on the same brawler in more than two, so each person sees real alternatives. Teammates outside the squad are filled in as players who can take anything. In Ranked your own records don't change the order; they're shown for reference. On their turn it shows what would hurt you most.</p>
+      <p><b>The drafter</b> follows the pick order (1-2-2-1 from whoever picks first). As you enter bans and picks, everything banned or taken is removed and it builds the top 3 full comps from here, plus 8 options for each of you (each scored by the best comp it fits into): three brawlers that work together (pair and trio records from top players' Ranked games), against what the other team has picked so far, from brawlers each of you owns. No comp repeats and nobody is on the same brawler in more than two, so each person sees real alternatives. Teammates outside the squad are filled in as players who can take anything. In Ranked your own records don't change the order; they're shown for reference. On their turn it shows what would hurt you most.</p>
       <p><b>Counters</b> (how one brawler does against another) are measured per mode from the Ranked games. Tested on players held out of the data, they barely helped: knowing the counters improved predictions by a hair and didn't change the share of games called right (61.2% either way), and at full strength they made predictions worse. So they count at a quarter weight. Don't expect magic counter-picks; the drafter mostly helps by tracking what's gone and picking the strongest comp that's left.</p>
       <p>Ban suggestions: how much each brawler would cut your chances if the other team got it (against the comp you'd most likely end up with), times how often top players pick it. That's a rule of thumb, not tested the way the comp model was.</p>
       <h2>What it can't tell you</h2>

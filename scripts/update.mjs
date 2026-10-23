@@ -23,6 +23,9 @@ const DECAY = 0.5;
 const COUNTRIES = ["global", "US", "CA", "MX", "BR", "GB", "FR", "DE", "ES", "IT", "TR", "PL", "KR", "JP", "AU", "ID", "PH", "EG", "SA", "AR"];
 const DUMP = process.env.DUMP_BATTLES; // optional path: also save every counted battle, for offline checks
 const COUNTED_TYPES = new Set(["ranked", "soloRanked", "teamRanked"]);
+// "ranked" in the API is a trophy game; these two are the Ranked mode (draft with bans).
+const RANKED_TYPES = new Set(["soloRanked", "teamRanked"]);
+const RANK_TIERS = ["Bronze", "Silver", "Gold", "Diamond", "Mythic", "Legendary", "Masters", "Pro"]; // 3 ranks each, Pro is one
 
 if (!KEY) {
   console.error("BS_API_KEY is not set. Create a key at https://developer.brawlstars.com (whitelist 45.79.218.79).");
@@ -112,7 +115,8 @@ function teamBattle(entry) {
   if (!mode || !map) return null;
   // 3v3 only: 5v5 modes are left out on purpose.
   if (b.teams.some((t) => t.length !== 3)) return null;
-  const teams = b.teams.map((t) => t.map((p) => ({ tag: p.tag, id: p.brawler?.id, power: p.brawler?.power })));
+  // In Ranked games the API's brawler "trophies" is the player's rank (1 = Bronze I ... 22 = Pro).
+  const teams = b.teams.map((t) => t.map((p) => ({ tag: p.tag, id: p.brawler?.id, power: p.brawler?.power, trophies: p.brawler?.trophies })));
   if (teams.some((t) => t.some((p) => !p.id))) return null;
   return { time: entry.battleTime, type: b.type, mode, map, mapId: entry.event?.id || null, result: b.result, teams };
 }
@@ -152,6 +156,11 @@ async function collectMeta() {
   const seen = new Set();
   const maps = {};
   const sideTally = {}; // per mode: [teams with a sampled player facing an unsampled team, their wins]
+  // Ranked games are also counted on their own, for the Ranked page (they stay in the main counts too).
+  const ranked = {};
+  const rankedTally = {};
+  const rankTiers = {}; // what ranks these Ranked games were played at (every player in them)
+  let rankedBattles = 0;
   let done = 0;
   await pool(players, async (tag) => {
     const log = await api(`/players/${enc(tag)}/battlelog`);
@@ -164,31 +173,45 @@ async function collectMeta() {
       seen.add(key);
       const mine = bt.teams.findIndex((t) => t.some((p) => p.tag === tag));
       if (mine < 0) continue;
-      const k = bt.mode + "|" + bt.map;
-      const m = maps[k] || (maps[k] = { mode: bt.mode, map: bt.map, mapId: bt.mapId, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {} });
-      m.battles += 1;
-      if (bt.type !== "ranked") m.ranked += 1;
       const has = bt.teams.map((t) => t.some((p) => sampled.has(p.tag)));
       if (DUMP) dump.push([bt.mode, bt.map, bt.type, bt.teams.map((t) => t.map((p) => p.id)), bt.result === "victory" ? mine : 1 - mine, has, bt.teams.flat().filter((p) => sampled.has(p.tag)).map((p) => p.tag)]);
-      bt.teams.forEach((team, i) => {
-        const win = (i === mine) === (bt.result === "victory");
-        // S: this team has a sampled top player and the other doesn't; O: the reverse; N: both do.
-        const side = has[i] && has[1 - i] ? 2 : has[i] ? 0 : 1;
-        if (side === 0) {
-          const t = sideTally[bt.mode] || (sideTally[bt.mode] = [0, 0]);
-          t[0] += 1;
-          t[1] += win ? 1 : 0;
+      countBattle(maps, sideTally, bt, mine, has);
+      if (RANKED_TYPES.has(bt.type)) {
+        countBattle(ranked, rankedTally, bt, mine, has);
+        rankedBattles++;
+        for (const p of bt.teams.flat()) {
+          const tier = RANK_TIERS[Math.ceil((p.trophies || 0) / 3) - 1] || "Pro";
+          if (p.trophies >= 1 && p.trophies <= 22) rankTiers[tier] = (rankTiers[tier] || 0) + 1;
         }
-        const ids = [...new Set(team.map((p) => p.id))].sort((a, b) => a - b);
-        for (const id of ids) addSide(m.brawlers, id, side, win);
-        for (const pk of combos(ids, 2)) addSide(m.pairs, pk, side, win);
-        if (ids.length === 3) addSide(m.trios, ids.join("-"), side, win);
-      });
+      }
     }
   });
   if (DUMP) await writeFile(DUMP, JSON.stringify(dump));
   const edge = debias(maps, sideTally);
-  return { maps, battles: seen.size, players: players.length, edge };
+  // Ranked gets its own edge: who wins more there differs from trophy games.
+  const rankedEdge = debias(ranked, rankedTally);
+  return { maps, battles: seen.size, players: players.length, edge, ranked, rankedBattles, rankedEdge, rankTiers };
+}
+
+function countBattle(maps, sideTally, bt, mine, has) {
+  const k = bt.mode + "|" + bt.map;
+  const m = maps[k] || (maps[k] = { mode: bt.mode, map: bt.map, mapId: bt.mapId, battles: 0, ranked: 0, brawlers: {}, pairs: {}, trios: {} });
+  m.battles += 1;
+  if (RANKED_TYPES.has(bt.type)) m.ranked += 1;
+  bt.teams.forEach((team, i) => {
+    const win = (i === mine) === (bt.result === "victory");
+    // S: this team has a sampled top player and the other doesn't; O: the reverse; N: both do.
+    const side = has[i] && has[1 - i] ? 2 : has[i] ? 0 : 1;
+    if (side === 0) {
+      const t = sideTally[bt.mode] || (sideTally[bt.mode] = [0, 0]);
+      t[0] += 1;
+      t[1] += win ? 1 : 0;
+    }
+    const ids = [...new Set(team.map((p) => p.id))].sort((a, b) => a - b);
+    for (const id of ids) addSide(m.brawlers, id, side, win);
+    for (const pk of combos(ids, 2)) addSide(m.pairs, pk, side, win);
+    if (ids.length === 3) addSide(m.trios, ids.join("-"), side, win);
+  });
 }
 
 function addSide(obj, key, side, win) {
@@ -284,18 +307,22 @@ async function refreshSquad() {
     }
     const log = await api(`/players/${enc(tag)}/battlelog`);
     const h = history[tag]?.battles ? history[tag] : (history[tag] = { battles: [] });
-    const seen = new Set(h.battles.map((b) => b[0]));
+    const seen = new Map(h.battles.map((b) => [b[0], b]));
     let added = 0;
     for (const entry of log?.items || []) {
       const bt = teamBattle(entry);
       if (!bt || bt.type === "friendly") continue;
       const t = battleMs(bt.time);
-      if (!t || seen.has(t)) continue;
-      seen.add(t);
+      if (!t) continue;
+      const isRanked = RANKED_TYPES.has(bt.type) ? 1 : 0;
+      // Games logged before Oct 22, 2026 have no Ranked flag; fill it in while they're still in the API's log.
+      if (seen.has(t)) { seen.get(t)[5] = isRanked; continue; }
       const team = bt.teams.find((tm) => tm.some((p) => p.tag === tag));
       const me = team.find((p) => p.tag === tag);
       const mates = team.filter((p) => p.tag !== tag && squadTags.has(p.tag)).map((p) => p.tag).sort();
-      h.battles.push([t, me.id, bt.mode, bt.result === "victory" ? 1 : 0, mates]);
+      const row = [t, me.id, bt.mode, bt.result === "victory" ? 1 : 0, mates, isRanked];
+      seen.set(t, row);
+      h.battles.push(row);
       added++;
     }
     h.battles.sort((a, b) => a[0] - b[0]);
@@ -310,6 +337,15 @@ async function refreshSquad() {
       highest: player.highestTrophies,
       icon: player.icon?.id || null,
       club: player.club?.name || null,
+      ranked: player.rankedRankName ? {
+        season: player.rankedSeasonId,
+        rank: player.rankedRankName,
+        elo: player.rankedElo,
+        seasonBest: player.highestSeasonRankedRankName,
+        seasonBestElo: player.highestSeasonRankedElo,
+        allTimeBest: player.highestAllTimeRankedRankName,
+        allTimeBestElo: player.highestAllTimeRankedElo,
+      } : null,
       brawlers: player.brawlers.map((b) => ({
         id: b.id,
         power: b.power,
@@ -321,7 +357,7 @@ async function refreshSquad() {
         gears: (b.gears || []).length,
         hyper: (b.hyperCharges || []).length,
       })),
-      // [time ms, brawler id, mode, won 1/0, squad mates' tags]
+      // [time ms, brawler id, mode, won 1/0, squad mates' tags, Ranked game 1/0 (missing on games before Oct 22, 2026)]
       games: h.battles,
     });
   }
@@ -352,11 +388,36 @@ if (!process.env.DUMP_ONLY) {
   await writeJson(join(DATA, "rotation.json"), { updated, slots: rotation.filter((r) => !/5v5/i.test(r.mode || "")) });
 }
 
+// The Ranked map pool changes each season, so the pool is whatever top players played in Ranked this pull.
+// Pool maps get similar counts (~500 each in Oct 2026); a map with a small fraction of that is a stray.
+function rankedPool(maps) {
+  const counts = Object.values(maps).map((m) => m.battles).sort((a, b) => a - b);
+  const median = counts[Math.floor(counts.length / 2)] || 0;
+  return Object.values(maps).filter((m) => m.battles >= Math.max(20, median / 4)).map((m) => m.mode + "|" + m.map);
+}
+
+async function writeRanked(sample, updated) {
+  const prev = await readJson(join(DATA, "ranked.json"), { maps: {} });
+  const pool = rankedPool(sample.ranked);
+  await writeJson(join(DATA, "ranked.json"), {
+    updated,
+    sample: { battles: sample.rankedBattles, decay: DECAY, sampledSideWin: sample.rankedEdge, tiers: sample.rankTiers },
+    pool,
+    maps: blend(sample.ranked, prev.maps),
+  });
+  console.log(`${sample.rankedBattles} Ranked battles, ${pool.length} maps in the Ranked pool`);
+  console.log("Ranked top-player side win rate (removed):", JSON.stringify(sample.rankedEdge));
+  console.log("Ranked games by rank (player slots):", JSON.stringify(sample.rankTiers));
+}
+
 // SQUAD_ONLY=1 refreshes profiles without re-sampling, e.g. after adding someone mid-week
 // (a second meta pull in the same week would count the same battles twice).
 if (process.env.DUMP_ONLY) {
   // Analysis run: sample and save raw battles (DUMP_BATTLES) without touching the site's data.
   await collectMeta();
+} else if (process.env.RANKED_ONLY) {
+  // Start or rebuild ranked.json mid-week without touching meta.json (a second meta pull would double-count).
+  await writeRanked(await collectMeta(), updated);
 } else if (!process.env.SQUAD_ONLY) {
   const sample = await collectMeta();
   const prev = await readJson(join(DATA, "meta.json"), { maps: {} });
@@ -369,5 +430,6 @@ if (process.env.DUMP_ONLY) {
   });
   console.log(`${sample.battles} new battles across ${Object.keys(sample.maps).length} maps`);
   console.log("top-player side win rate (removed):", JSON.stringify(sample.edge));
+  await writeRanked(sample, updated);
 }
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);

@@ -193,9 +193,9 @@
     if (!players.length) comps = `<p class="note">Pick who's playing above and this fills with comps from your own brawlers.</p>`;
     else if (players.length > 3) comps = `<p class="note">${players.length} people picked, but it's 3v3. Tap whoever's sitting out.</p>`;
     else {
-      recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded, rk ? { enemies: d.theirs, allies: d.allies, personalWeight: RANKED_PW } : {});
-      // In a Ranked draft your own picks are entered in the drafter instead.
-      comps = (!rk && players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
+      // In a Ranked draft the comps and your own picks live in the drafter; this section keeps "Don't suggest".
+      if (!rk) recs = recommend(md, players, players.length === 1 ? 8 : 6, locked, excluded);
+      comps = rk ? banRow(players, locked, md) : (players.length > 1 ? lockRow(players, locked, md) : "") + banRow(players, locked, md) +
         (recs.length ? `<div class="comps">${recs.map((r, i) => compRow(r, players, i, rk && d.theirs.length ? "vs their picks" : "top players")).join("")}</div>`
           : `<p class="note">${excluded.some((x) => x.length) ? `No brawlers left at power ${state.minPower}+ once the left-out ones are removed.` : `Nobody picked owns a brawler at power ${state.minPower}+.`}</p>`);
     }
@@ -215,11 +215,11 @@
         </div>
       </header>
 
-      ${rk ? (players.length > 3 ? drafter(md, [], [], [], `${players.length} people are on, but it's 3v3: tap whoever's sitting out below to get picks for your squad. Until then this works as a drafter for any team.`) : drafter(md, players, locked, recs)) : ""}
+      ${rk ? (players.length > 3 ? drafter(md, [], [], `${players.length} people are on, but it's 3v3: tap whoever's sitting out below to get picks for your squad. Until then this works as a drafter for any team.`) : drafter(md, players, locked)) : ""}
 
       <section class="section">
-        <div class="section-head"><div><span class="eyebrow">${rk ? "Draft · your picks" : "Ranked for your squad"}</span><h2>Your comps</h2>
-          <p>${rk ? "Ranked by your chance against what the other team has picked so far (the %, from top players' Ranked games here, counters included). Only brawlers you own count; your own stats don't. Anything banned or taken in the drafter is left out."
+        <div class="section-head"><div><span class="eyebrow">${rk ? "Who's on" : "Ranked for your squad"}</span><h2>${rk ? "Squad" : "Your comps"}</h2>
+          <p>${rk ? "Pick who's playing; the drafter above builds comps from the brawlers you own. Anyone not in the squad is filled in by the drafter as a teammate who can play anything."
             : "Ranked mostly by how each comp does for top players on this map (the %), then nudged toward what each of you is good on (recent games, then highest trophies)."}</p></div></div>
         ${picker(true)}
         <div style="height:12px"></div>
@@ -421,7 +421,7 @@
     </div>`;
   }
 
-  function drafter(md, players, locked, recs, warn) {
+  function drafter(md, players, locked, warn) {
     const d = state.dv;
     const squadPicks = players.length <= 3 ? locked.filter((x) => x != null) : [];
     const ours = [...d.allies, ...squadPicks];
@@ -444,31 +444,40 @@
       return { ...o, gain: turn.side === "them" ? base - after.L : after.L - base, p: after.p };
     }).sort((a, b) => b.gain - a.gain).slice(0, 5);
 
-    // Squad suggestions for this turn: each open person's best 5 given every pick so far (synergy with our
-    // picks, counters against theirs), ranked on top players' numbers only (RANKED_PW). The % is our
-    // chance if this person takes it now; picks still to come count as average.
-    const dr = { ours, theirs: d.theirs };
-    const forPlayer = players.length && players.length <= 3 ? players.map((p, j) => {
-      if (locked[j] != null) return null;
-      const keep = (b) => b.power >= state.minPower && !gone.has(b.id) && !(state.excluded[p.tag] || []).includes(b.id);
-      return { p, opts: ranked(p, md, keep, dr).slice(0, 5) };
-    }).filter(Boolean) : [];
+    // The team we're drafting for: the selected squad, plus a stand-in for each slot a teammate outside the
+    // squad will fill (they could play anything), so every suggestion is a full three-brawler comp. Comps
+    // are ranked on top players' Ranked win rates against what they've picked (pair/trio synergy and
+    // counters included); no comp repeats, and nobody gets the same brawler in more than two of them.
+    const free = Math.max(0, 3 - players.length - d.allies.length);
+    const anyone = Object.keys(brawlerById).map((id) => ({ id: +id, power: 11, highest: 0 }));
+    const team = [...players, ...Array.from({ length: free }, (_, k) => ({ name: players.length || d.allies.length ? `Teammate ${k + 1}` : `Pick ${k + 1}`, tag: "", brawlers: anyone, games: [] }))];
+    const comps = team.length ? E.recommend(md, team, {
+      minPower: state.minPower, limit: 5, now: Date.now(), enemies: d.theirs, allies: d.allies, personalWeight: RANKED_PW,
+      locked: team.map((_, i) => locked[i] ?? null),
+      excluded: team.map((p) => [...(p.tag ? state.excluded[p.tag] || [] : []), ...draftGone(d)]),
+    }) : [];
 
     let status;
     if (turn.at < 0) status = `<b>Draft done.</b> Your chance against their comp: <b>${pct(md.draft(ours, d.theirs).p)}</b>.`;
-    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> ${forPlayer.length ? "Top 5 for whoever's picking, given every pick so far, ranked by top players' win rates: your chance if they take it, and their own record for reference (tap to lock it in):" : "Top 5 still open, given every pick so far:"}`;
+    else if (turn.side === "us") status = `<b>Your turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Top 5 comps from here, by top players' win rates against what they've picked. Take your picks from #1, or tap any brawler to lock it in:`;
     else status = `<b>Their turn: ${turn.n} pick${turn.n > 1 ? "s" : ""}.</b> Enter them as they lock in. What would hurt you most (your chance if they take it):`;
     // Bans are judged against the comp we'd most likely end up with (the top suggestion), or any average team.
-    const plan = [...d.allies, ...(recs[0]?.picks.map((x) => x.id) || squadPicks)];
+    const plan = [...d.allies, ...(comps[0]?.picks.map((x) => x.id) || squadPicks)];
     // Banned ones stay in the grid (greyed) so a mistaken tap can be undone.
     const ban = banCandidates(md, plan, d.theirs, new Set([...d.theirs, ...d.allies, ...squadPicks, ...plan]), 8 + d.bans.length);
     // Flag a ban candidate that's also one of our own best picks: banning it hurts us too.
     const oursBest = {};
     for (const p of players.slice(0, 3)) for (const o of ranked(p, md, (b) => b.power >= state.minPower && !(state.excluded[p.tag] || []).includes(b.id)).slice(0, 3)) (oursBest[o.id] ||= []).push(p.name);
 
-    // rec: the person's record on it lately, so "top pick" vs "higher %" is explained at a glance.
+    const optChip = (id, p) => `<button type="button" class="next-opt" data-next="${id}" data-side="them">${bImg(id)}<span><b>${esc(bName(id))}</b><small>${pct(p)}</small></span></button>`;
+    // One suggested comp: teammates' picks so far, then each slot (locked, or tap to lock / count it).
     const rec = (pers) => (pers?.recentGames ? `${pers.recentWins}-${pers.recentGames - pers.recentWins} · 30d` : "");
-    const optChip = (id, p, note, form) => `<button type="button" class="next-opt" data-next="${id}" data-side="${turn.side}">${bImg(id)}<span><b>${esc(bName(id))}</b><small>${pct(p)}${note ? " · " + esc(note) : ""}</small>${form ? `<small>${esc(form)}</small>` : ""}</span></button>`;
+    const slot = (inner, cls = "") => `<span class="dslot${cls}">${inner}</span>`;
+    const compLine = (r, i) => `<div class="dcomp${i === 0 ? " top" : ""}"><span class="rank">${i + 1}</span><div class="dslots">
+      ${d.allies.map((id) => slot(`${bImg(id)}<span><small>Teammate</small><b>${esc(bName(id))}</b></span>`, " locked")).join("")}
+      ${r.picks.map((c, k) => c.locked ? slot(`${bImg(c.id)}<span><small>${esc(team[k].name)}</small><b>${esc(bName(c.id))}</b></span>`, " locked")
+        : `<button type="button" class="dslot" data-next="${c.id}" data-side="us" data-for="${esc(team[k].tag)}" title="Lock ${esc(bName(c.id))} for ${esc(team[k].name)}">${bImg(c.id)}<span><small>${esc(team[k].name)}</small><b>${esc(bName(c.id))}</b>${team[k].tag && rec(c.pers) ? `<small>${esc(rec(c.pers))}</small>` : ""}</span></button>`).join("")}
+      </div><span class="dpct"><b>${pct(r.comp.p)}</b><small>${d.theirs.length ? "vs their picks" : "top players"}</small></span></div>`;
     return `<section class="section">
       <div class="section-head"><div><span class="eyebrow">Ranked draft</span><h2>Drafter</h2>
         <p>Enter the bans and each pick as the draft happens. It tracks whose turn it is and gives the best next pick against what they've taken so far.</p></div>
@@ -483,9 +492,9 @@
           ${allyMax ? draftBox("allies", players.length ? "Teammates' picks (not in squad)" : "Your team's picks", d, allyMax) : ""}
         </div>
         <p class="draft-status">${status}</p>
-        ${turn.at >= 0 ? `<div class="next">${turn.side === "us" && forPlayer.length
-          ? forPlayer.map((f) => `<div class="next-who"><span class="who">${esc(f.p.name)}</span><div class="next-opts">${f.opts.map((o, k) => optChip(o.id, o.p, `#${k + 1}`, rec(o.pers))).join("") || `<span class="muted">Nothing left they own</span>`}</div></div>`).join("")
-          : `<div class="next-opts">${open.map((o) => optChip(o.id, o.p, "")).join("")}</div>`}</div>` : ""}
+        ${turn.at >= 0 ? `<div class="next">${turn.side === "us"
+          ? comps.map(compLine).join("") || `<p class="muted">No comps left with what you own at power ${state.minPower}+.</p>`
+          : `<div class="next-opts">${open.map((o) => optChip(o.id, o.p)).join("")}</div>`}</div>` : ""}
         ${players.length && players.length <= 3 ? lockRow(players, locked, md, true) : ""}
       </div>
       <div class="section-head" style="margin:22px 0 10px"><div><span class="eyebrow">Ban calculator</span><h3 class="sub-h">Best bans${plan.length ? ` against ${esc(plan.map(bName).join(" + "))}` : ""}</h3>
@@ -671,7 +680,7 @@
       <p>The model was checked by building it from half the top players and predicting games of the other half. After tuning, its percentages matched how often teams actually won.</p>
       <h2>Ranked</h2>
       <p>The Ranked page uses only top players' Ranked games${state.ranked?.sample?.battles ? ` (${fmt(state.ranked.sample.battles)} last pull, about ${fmt(state.ranked.sample.battles / Math.max(1, (state.ranked.pool || []).length))} per map)` : ""}, debiased on their own the same way. The players sampled are top <i>trophy</i> players, so their Ranked games are spread across ranks: the bar on the Ranked page shows the split (in Oct 2026 mostly Mythic, Legendary and Diamond, almost no Masters or Pro). What wins there may not be what wins at Silver.</p>
-      <p><b>The drafter</b> follows the pick order (1-2-2-1 from whoever picks first). As you enter bans and picks, everything banned or taken is removed, and the next pick is the brawler that gives your team the best chance against what the other team has so far; picks still to come count as average. On their turn it shows what would hurt you most.</p>
+      <p><b>The drafter</b> follows the pick order (1-2-2-1 from whoever picks first). As you enter bans and picks, everything banned or taken is removed and it builds the top 5 full comps from here: three brawlers that work together (pair and trio records from top players' Ranked games), against what the other team has picked so far, from brawlers each of you owns. No comp repeats and nobody is on the same brawler in more than two, so each person sees real alternatives. Teammates outside the squad are filled in as players who can take anything. In Ranked your own records don't change the order; they're shown for reference. On their turn it shows what would hurt you most.</p>
       <p><b>Counters</b> (how one brawler does against another) are measured per mode from the Ranked games. Tested on players held out of the data, they barely helped: knowing the counters improved predictions by a hair and didn't change the share of games called right (61.2% either way), and at full strength they made predictions worse. So they count at a quarter weight. Don't expect magic counter-picks; the drafter mostly helps by tracking what's gone and picking the strongest comp that's left.</p>
       <p>Ban suggestions: how much each brawler would cut your chances if the other team got it (against the comp you'd most likely end up with), times how often top players pick it. That's a rule of thumb, not tested the way the comp model was.</p>
       <h2>What it can't tell you</h2>
@@ -740,15 +749,14 @@
     const fp = e.target.closest("[data-first]");
     if (fp) { state.draft.first = fp.dataset.first; rerender(); return; }
     if (e.target.closest("[data-draft-reset]")) { state.draft = newDraft(); state.locks = {}; rerender(); return; }
-    // A suggested next pick: lock it for the only open squad member, or count it as a teammate's pick.
+    // A tapped suggestion: their pick on their turn; on ours, that slot's person or a teammate's pick.
     const nx = e.target.closest("[data-next]");
     if (nx) {
-      const id = +nx.dataset.next, ps = selectedPlayers();
-      if (nx.dataset.side === "them") { draftIn("theirs", id, false); return; }
-      const who = nx.closest(".next-who")?.querySelector(".who")?.textContent;
-      const p = ps.find((x) => x.name === who) || (ps.filter((x) => state.locks[x.tag] == null).length === 1 ? ps.find((x) => state.locks[x.tag] == null) : null);
-      if (p && ps.length <= 3) lockIn(p.tag, id, false);
-      else if (state.dv.allies.length < allySlots(ps)) draftIn("allies", id, false);
+      const id = +nx.dataset.next;
+      if (nx.dataset.side === "them") draftIn("theirs", id, false);
+      // A squad member's slot locks it for them; a stand-in slot counts as a teammate's pick.
+      else if (nx.dataset.for) lockIn(nx.dataset.for, id, false);
+      else draftIn("allies", id, false);
       return;
     }
     if (e.target.closest("[data-unban-all]")) {

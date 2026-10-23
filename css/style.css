@@ -329,6 +329,30 @@ td.num, th.num { text-align: right; }
 .ban-chips.picked img, .ban-chips.picked .ph { filter: none; opacity: 1; }
 .ban-chips.picked b { text-decoration: none; color: var(--ink); }
 .sub-h { font-size: 26px; margin-top: 4px; }
+.dcomp { display: grid; grid-template-columns: 26px minmax(0, 1fr) 96px; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--bg); }
+.dcomp.top { border-color: var(--accent); background: var(--surface); }
+.dcomp .rank { font: 800 20px/1 var(--display); color: var(--muted); }
+.dcomp.top .rank { color: var(--ink); }
+.dslots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dslot { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 8px; align-items: center; min-width: 0; padding: 4px; border: 0; border-radius: 9px; background: none; text-align: left; color: inherit; font: inherit; }
+button.dslot { cursor: pointer; }
+button.dslot:hover { background: var(--sunk); }
+.dslot img, .dslot .ph { width: 38px; height: 38px; border-radius: 9px; background: var(--sunk); }
+.dslot.locked img, .dslot.locked .ph { box-shadow: 0 0 0 2px var(--accent); }
+.dslot b { display: block; font: 800 16px/1.05 var(--display); text-transform: uppercase; overflow-wrap: anywhere; }
+.dslot small { display: block; font: 500 10.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dpct { text-align: right; }
+.dpct b { display: block; font: 900 24px/1 var(--display); }
+.dpct small { font: 500 10.5px var(--mono); color: var(--muted); }
+@media (max-width: 640px) {
+  .dcomp { grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 8px; }
+  .dpct { grid-column: 2; text-align: left; display: flex; gap: 8px; align-items: baseline; }
+  .dpct b { font-size: 20px; }
+  .dslots { gap: 4px; }
+  .dslot { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; gap: 3px; padding: 4px 2px; }
+  .dslot b { font-size: 14px; }
+  .dslot small { font-size: 9.5px; max-width: 100%; }
+}
 .tiles li.first .tile { border-color: var(--ink); box-shadow: var(--shadow); }
 
 /* ---------- footer ---------- */
